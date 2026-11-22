@@ -7,3 +7,4 @@ target/
 corpus/.cache/
 *.csv
 *.csv.gz
+__pycache__/

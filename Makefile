@@ -27,13 +27,18 @@ help: ## List targets
 jars: ## Build the agent (shaded) and demo app jars, without tests
 	./mvnw -B -q package -DskipTests
 
-test: ## Unit tests
+test: ## Unit tests (Java + corpus)
 	./mvnw -B test
+	python3 -m unittest discover -s corpus -p 'test_*.py'
 
 verify: ## Unit + integration tests (Testcontainers, needs Docker)
 	./mvnw -B verify
 
 # ---------------------------------------------------------------- local playground (no Kubernetes)
+.PHONY: openlibrary
+openlibrary: ## Stream Open Library dumps and cache a small subset (~/.cache/flairquery/openlibrary)
+	python3 -I corpus/openlibrary/fetch.py $(OL_ARGS)
+
 .PHONY: demo-local seed-local traffic-local demo-local-clean
 demo-local: jars ## Postgres 16 in Docker + demo app with the agent (foreground, Ctrl-C to stop)
 	docker compose -f $(LOCAL_COMPOSE) up -d --wait
