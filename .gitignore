@@ -1,0 +1,9 @@
+target/
+*.iml
+.idea/
+.vscode/
+.DS_Store
+# corpus caches and generated data never live in the repo
+corpus/.cache/
+*.csv
+*.csv.gz
