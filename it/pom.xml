@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.github.anthonydeseille.flairquery</groupId>
+    <artifactId>flairquery-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>flairquery-it</artifactId>
+  <name>FlairQuery :: Integration tests</name>
+  <description>
+    Testcontainers PostgreSQL 16 (pg_stat_statements) + corpus profile S + the demo app launched in a
+    separate JVM with -javaagent. Runs in `verify` (failsafe). Needs Docker and python3.
+  </description>
+
+  <properties>
+    <maven.deploy.skip>true</maven.deploy.skip>
+    <fq.agent.jar>${project.basedir}/../agent/target/flairquery-agent.jar</fq.agent.jar>
+    <fq.demo.jar>${project.basedir}/../demo-app/target/flairquery-demo-app.jar</fq.demo.jar>
+    <fq.corpus.dir>${project.basedir}/../corpus</fq.corpus.dir>
+  </properties>
+
+  <dependencies>
+    <!-- build order only: the tests use the packaged jars from disk, not these classpaths -->
+    <dependency>
+      <groupId>io.github.anthonydeseille.flairquery</groupId>
+      <artifactId>flairquery-agent</artifactId>
+      <version>${project.version}</version>
+      <scope>provided</scope>
+      <exclusions>
+        <exclusion><groupId>*</groupId><artifactId>*</artifactId></exclusion>
+      </exclusions>
+    </dependency>
+
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.platform</groupId>
+      <artifactId>junit-platform-launcher</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>2.23.0</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-simple</artifactId>
+      <version>2.0.17</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <configuration>
+          <systemPropertyVariables>
+            <fq.agent.jar>${fq.agent.jar}</fq.agent.jar>
+            <fq.demo.jar>${fq.demo.jar}</fq.demo.jar>
+            <fq.corpus.dir>${fq.corpus.dir}</fq.corpus.dir>
+            <fq.it.logs>${project.build.directory}/it-logs</fq.it.logs>
+            <org.slf4j.simpleLogger.defaultLogLevel>warn</org.slf4j.simpleLogger.defaultLogLevel>
+          </systemPropertyVariables>
+        </configuration>
+        <executions>
+          <execution>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
