@@ -141,6 +141,21 @@ class MeasurementTest {
     }
 
     @Test
+    void httpServerThreadsNeverKeepTheJvmAlive() {
+        FqHttpServer server = new FqHttpServer(runtime.registry());
+        assertThat(server.start(0)).isTrue();
+        try {
+            List<Thread> nonDaemon = Thread.getAllStackTraces().keySet().stream()
+                    .filter(t -> t.getName().startsWith("HTTP-Dispatcher") || t.getName().startsWith("flairquery"))
+                    .filter(t -> !t.isDaemon())
+                    .toList();
+            assertThat(nonDaemon).as("agent threads must all be daemon").isEmpty();
+        } finally {
+            server.stop();
+        }
+    }
+
+    @Test
     void busyPortDoesNotFail() throws Exception {
         try (var socket = new java.net.ServerSocket(0)) {
             FqHttpServer server = new FqHttpServer(runtime.registry());

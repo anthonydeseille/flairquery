@@ -94,7 +94,10 @@
                   <artifact>*:*</artifact>
                   <excludes>
                     <exclude>module-info.class</exclude>
-                    <exclude>META-INF/versions/*/module-info.class</exclude>
+                    <!-- Multi-release entries keep their original net/bytebuddy path after relocation and
+                         would shadow the application's own ByteBuddy (e.g. Hibernate) on JDK 24+:
+                         "NoClassDefFoundError: net/bytebuddy/... (wrong name: .../shaded/bytebuddy/...)". -->
+                    <exclude>META-INF/versions/**</exclude>
                     <exclude>META-INF/maven/**</exclude>
                     <exclude>META-INF/*.SF</exclude>
                     <exclude>META-INF/*.DSA</exclude>
@@ -111,7 +114,6 @@
                     <Agent-Class>io.github.anthonydeseille.flairquery.agent.FqAgent</Agent-Class>
                     <Can-Retransform-Classes>true</Can-Retransform-Classes>
                     <Can-Redefine-Classes>true</Can-Redefine-Classes>
-                    <Multi-Release>true</Multi-Release>
                     <Implementation-Title>flairquery-agent</Implementation-Title>
                     <Implementation-Version>${project.version}</Implementation-Version>
                   </manifestEntries>

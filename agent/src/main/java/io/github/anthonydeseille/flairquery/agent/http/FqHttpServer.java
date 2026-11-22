@@ -54,7 +54,7 @@ public final class FqHttpServer {
             server.createContext("/fq/endpoints", ex -> json(ex, Map.of("endpoints", registry.endpoints())));
             server.createContext("/fq/health", ex -> json(ex, Map.of("status", "UP")));
             server.createContext("/", ex -> respond(ex, 404, "application/json", "{\"error\":\"not found\"}"));
-            server.start();
+            startAsDaemon(server);
             JsonLog.info("http server started", "port", port());
             return true;
         } catch (Throwable t) {
@@ -62,6 +62,29 @@ public final class FqHttpServer {
                     "port", port);
             stop();
             return false;
+        }
+    }
+
+    /**
+     * {@code HttpServer#start} creates its "HTTP-Dispatcher" thread with the daemon status of the calling
+     * thread. Started from the premain (non-daemon) thread, it would keep the JVM alive after the
+     * application ends (e.g. a failed Spring startup never exits). Starting it from a daemon thread
+     * guarantees the agent never prevents JVM shutdown.
+     */
+    private static void startAsDaemon(HttpServer server) throws InterruptedException {
+        Throwable[] failure = new Throwable[1];
+        Thread starter = new Thread(() -> {
+            try {
+                server.start();
+            } catch (Throwable t) {
+                failure[0] = t;
+            }
+        }, "flairquery-http-starter");
+        starter.setDaemon(true);
+        starter.start();
+        starter.join(10_000);
+        if (failure[0] != null) {
+            throw new IllegalStateException("http server start failed", failure[0]);
         }
     }
 
