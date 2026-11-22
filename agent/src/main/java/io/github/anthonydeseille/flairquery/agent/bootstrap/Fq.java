@@ -50,6 +50,34 @@ public final class Fq {
         }
     }
 
+    public static void statementPrepared(Object statement, String sql) {
+        if (statement == null || sql == null) {
+            return;
+        }
+        try {
+            hooks.statementPrepared(statement, sql);
+        } catch (Throwable t) {
+            onError("statementPrepared", t);
+        }
+    }
+
+    public static long queryStart() {
+        try {
+            return hooks.queryStart();
+        } catch (Throwable t) {
+            onError("queryStart", t);
+            return -1L;
+        }
+    }
+
+    public static void queryEnd(Object statement, String sql, long start, Throwable thrown) {
+        try {
+            hooks.queryEnd(statement, sql, start, thrown);
+        } catch (Throwable t) {
+            onError("queryEnd", t);
+        }
+    }
+
     public static void requestEnter(Object servletRequest) {
         try {
             hooks.requestEnter(servletRequest);

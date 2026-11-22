@@ -16,6 +16,9 @@ class FqFailSafeTest {
 
     private static final FqHooks EXPLODING = new FqHooks() {
         @Override public String tagSql(String sql) { throw new OutOfMemoryError("boom"); }
+        @Override public void statementPrepared(Object st, String sql) { throw new IllegalStateException("boom"); }
+        @Override public long queryStart() { throw new IllegalStateException("boom"); }
+        @Override public void queryEnd(Object st, String sql, long start, Throwable t) { throw new IllegalStateException("boom"); }
         @Override public void requestEnter(Object r) { throw new IllegalStateException("boom"); }
         @Override public void requestExit(Object r, Object s, Throwable t) { throw new StackOverflowError(); }
     };
@@ -33,6 +36,9 @@ class FqFailSafeTest {
         assertThatCode(() -> Fq.requestEnter(new Object())).doesNotThrowAnyException();
         assertThatCode(() -> Fq.requestExit(new Object(), null, null)).doesNotThrowAnyException();
         assertThat(Fq.tagSql(null)).isNull();
+        assertThatCode(() -> Fq.statementPrepared(new Object(), "select 1")).doesNotThrowAnyException();
+        assertThat(Fq.queryStart()).isEqualTo(-1L);
+        assertThatCode(() -> Fq.queryEnd(new Object(), null, 1L, null)).doesNotThrowAnyException();
     }
 
     @Test
@@ -50,6 +56,9 @@ class FqFailSafeTest {
     void nullFromHooksMeansUnchanged() {
         Fq.install(new FqHooks() {
             @Override public String tagSql(String sql) { return null; }
+            @Override public void statementPrepared(Object st, String sql) { }
+            @Override public long queryStart() { return -1L; }
+            @Override public void queryEnd(Object st, String sql, long start, Throwable t) { }
             @Override public void requestEnter(Object r) { }
             @Override public void requestExit(Object r, Object s, Throwable t) { }
         });

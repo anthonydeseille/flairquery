@@ -41,7 +41,8 @@ class InstrumentationTest {
         recorder = DriverSqlRecorder.install(inst);
         installation = FqAgent.start(Map.of(
                 "FQ_APP_NAME", "test-app",
-                "FQ_BASE_PACKAGES", FIXTURE), inst);
+                "FQ_BASE_PACKAGES", FIXTURE,
+                "FQ_HTTP_PORT", "0"), inst);
         assertThat(installation).isNotNull();
 
         h2 = new JdbcDataSource();
@@ -146,10 +147,33 @@ class InstrumentationTest {
     }
 
     @Test
+    void nPlusOneThroughHikariIsCountedExactlyOnce() throws Exception {
+        DemoServlet servlet = new DemoServlet();
+        servlet.pattern = "/n1/{id}";
+        SqlProbe probe = new SqlProbe(hikari);
+        servlet.afterMapping = () -> {
+            for (int i = 0; i < 12; i++) {
+                probe.selectOne();
+            }
+            return "done";
+        };
+
+        servlet.service(FakeHttp.request("GET", "/n1/7"), FakeHttp.response());
+
+        var endpoint = installation.runtime().registry().endpoints().stream()
+                .filter(e -> e.get("endpoint").equals("GET /n1/{id}")).findFirst().orElseThrow();
+        assertThat(endpoint).containsEntry("queries", 12L).containsEntry("nPlusOneRequests", 1L);
+        var n1 = installation.runtime().registry().nPlusOne().stream()
+                .filter(e -> e.get("endpoint").equals("GET /n1/{id}")).findFirst().orElseThrow();
+        assertThat(n1).containsEntry("sql", "SELECT ?").containsEntry("maxQueriesPerRequest", 12L);
+        assertThat((String) n1.get("caller")).startsWith(FIXTURE + ".SqlProbe#selectOne:");
+    }
+
+    @Test
     void agentFaultNeverBreaksTheBusinessQuery() throws Exception {
         try {
             Fq.install(new io.github.anthonydeseille.flairquery.agent.core.FqRuntime(
-                    FqConfig.fromEnv(Map.of("FQ_BASE_PACKAGES", FIXTURE, "FQ_TEST_FAULT", "tagger,request"))));
+                    FqConfig.fromEnv(Map.of("FQ_BASE_PACKAGES", FIXTURE, "FQ_TEST_FAULT", "tagger,request,metrics"))));
 
             DemoServlet servlet = new DemoServlet();
             SqlProbe probe = new SqlProbe(hikari);

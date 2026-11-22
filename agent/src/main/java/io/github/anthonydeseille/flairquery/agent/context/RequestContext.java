@@ -1,5 +1,7 @@
 package io.github.anthonydeseille.flairquery.agent.context;
 
+import io.github.anthonydeseille.flairquery.agent.metrics.RequestStats;
+
 /**
  * State of the HTTP request being served by the current thread. Created by the outermost
  * {@code HttpServlet#service} call and always removed when it exits.
@@ -11,6 +13,7 @@ public final class RequestContext {
     private final String uri;
     private final boolean sampled;
     private final long startNanos;
+    private final RequestStats stats = new RequestStats();
     int depth;
 
     /** Sanitized endpoint once the Spring pattern is known (it never changes afterwards). */
@@ -30,6 +33,7 @@ public final class RequestContext {
     public boolean sampled() { return sampled; }
     public long startNanos() { return startNanos; }
     public int depth() { return depth; }
+    public RequestStats stats() { return stats; }
 
     public String resolvedEndpoint() { return resolvedEndpoint; }
     public void resolvedEndpoint(String endpoint) { this.resolvedEndpoint = endpoint; }

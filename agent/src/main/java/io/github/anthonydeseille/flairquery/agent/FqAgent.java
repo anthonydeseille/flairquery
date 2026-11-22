@@ -2,7 +2,11 @@ package io.github.anthonydeseille.flairquery.agent;
 
 import io.github.anthonydeseille.flairquery.agent.bootstrap.Fq;
 import io.github.anthonydeseille.flairquery.agent.core.FqRuntime;
+import io.github.anthonydeseille.flairquery.agent.http.FqHttpServer;
+import io.github.anthonydeseille.flairquery.agent.jdbc.PrepareStatementAdvice;
+import io.github.anthonydeseille.flairquery.agent.jdbc.PreparedExecuteAdvice;
 import io.github.anthonydeseille.flairquery.agent.jdbc.SqlArgumentAdvice;
+import io.github.anthonydeseille.flairquery.agent.jdbc.StatementExecuteAdvice;
 import io.github.anthonydeseille.flairquery.agent.log.JsonLog;
 import io.github.anthonydeseille.flairquery.agent.servlet.HttpServletServiceAdvice;
 import net.bytebuddy.agent.builder.AgentBuilder;
@@ -35,8 +39,9 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
  *       and overrides: opens / closes the request context;</li>
  *   <li>{@code java.sql.Connection#prepareStatement(String, ...)} implementations
  *       (driver and pool proxies, e.g. HikariCP): tags the SQL;</li>
- *   <li>{@code java.sql.Statement#execute / executeQuery / executeUpdate / executeLargeUpdate / addBatch(String, ...)}
- *       implementations: tags the SQL.</li>
+ *   <li>{@code java.sql.Statement#execute / executeQuery / executeUpdate / executeLargeUpdate(String, ...)}
+ *       implementations: tags and measures; {@code addBatch(String)}: tags;</li>
+ *   <li>no-argument {@code execute*} / {@code executeBatch} (prepared statements): measures.</li>
  * </ul>
  * {@code prepareCall} is deliberately not tagged: JDBC escape syntax ({@code {call ...}}) must stay first.
  *
@@ -97,13 +102,15 @@ public final class FqAgent {
             }
             throw t;
         }
+        FqHttpServer http = new FqHttpServer(runtime.registry());
+        http.start(config.httpPort()); // failure only disables the endpoints
         JsonLog.info("agent started",
                 "app", config.appName(),
                 "basePackages", config.basePackages(),
                 "nPlusOneThreshold", config.nPlusOneThreshold(),
                 "samplingRate", config.samplingRate(),
-                "httpPort", config.httpPort());
-        return new Installation(runtime, transformer, inst);
+                "httpPort", http.port());
+        return new Installation(runtime, transformer, inst, http);
     }
 
     static AgentBuilder agentBuilder() {
@@ -130,27 +137,39 @@ public final class FqAgent {
                                         .and(takesArgument(1, named("jakarta.servlet.http.HttpServletResponse")))
                                         .and(not(isAbstract())),
                                 HttpServletServiceAdvice.class.getName()))
-                // JDBC: prepareStatement(String, ...)
+                // JDBC: prepareStatement(String, ...) -> tag, remember statement SQL
                 .type(not(isInterface()).and(hasSuperType(named("java.sql.Connection"))))
                 .transform(new AgentBuilder.Transformer.ForAdvice()
                         .advice(named("prepareStatement")
                                         .and(takesArgument(0, String.class))
                                         .and(not(isAbstract())),
-                                SqlArgumentAdvice.class.getName()))
-                // JDBC: Statement#execute*(String, ...)
+                                PrepareStatementAdvice.class.getName()))
+                // JDBC: Statement#execute*(String, ...) -> tag + measure; addBatch(String) -> tag
                 .type(not(isInterface()).and(hasSuperType(named("java.sql.Statement"))))
                 .transform(new AgentBuilder.Transformer.ForAdvice()
-                        .advice(namedOneOf("execute", "executeQuery", "executeUpdate", "executeLargeUpdate", "addBatch")
+                        .advice(namedOneOf("execute", "executeQuery", "executeUpdate", "executeLargeUpdate")
                                         .and(takesArgument(0, String.class))
                                         .and(not(isAbstract())),
-                                SqlArgumentAdvice.class.getName()));
+                                StatementExecuteAdvice.class.getName())
+                        .advice(named("addBatch")
+                                        .and(takesArguments(1))
+                                        .and(takesArgument(0, String.class))
+                                        .and(not(isAbstract())),
+                                SqlArgumentAdvice.class.getName())
+                        .advice(namedOneOf("execute", "executeQuery", "executeUpdate", "executeLargeUpdate",
+                                        "executeBatch", "executeLargeBatch")
+                                        .and(takesArguments(0))
+                                        .and(not(isAbstract())),
+                                PreparedExecuteAdvice.class.getName()));
     }
 
     /** Handle on an installed agent (used by tests and, later, by the HTTP server lifecycle). */
-    public record Installation(FqRuntime runtime, ResettableClassFileTransformer transformer, Instrumentation inst) {
+    public record Installation(FqRuntime runtime, ResettableClassFileTransformer transformer, Instrumentation inst,
+                               FqHttpServer http) {
 
         public void uninstall() {
             Fq.reset();
+            http.stop();
             transformer.reset(inst, AgentBuilder.RedefinitionStrategy.RETRANSFORMATION);
         }
     }

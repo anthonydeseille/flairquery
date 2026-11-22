@@ -45,6 +45,30 @@ public final class ServletRequestAccessor {
         }
     }
 
+    private static final ClassValue<MethodHandle> STATUS = new ClassValue<>() {
+        @Override
+        protected MethodHandle computeValue(Class<?> type) {
+            Class<?> response = Handles.load("jakarta.servlet.http.HttpServletResponse", type.getClassLoader());
+            return Handles.find(MethodHandles.publicLookup(), response, "getStatus", MethodType.methodType(int.class));
+        }
+    };
+
+    /** {@code HttpServletResponse#getStatus()}, or -1. */
+    public static int status(Object response) {
+        if (response == null) {
+            return -1;
+        }
+        MethodHandle h = STATUS.get(response.getClass());
+        if (h == null) {
+            return -1;
+        }
+        try {
+            return (int) h.invoke(response);
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
     private static String invokeString(MethodHandle h, Object target) {
         if (h == null) {
             return null;
@@ -70,7 +94,7 @@ public final class ServletRequestAccessor {
                     find(lookup, servletRequest, "getAttribute", MethodType.methodType(Object.class, String.class)));
         }
 
-        private static Class<?> load(String name, ClassLoader cl) {
+        static Class<?> load(String name, ClassLoader cl) {
             try {
                 return Class.forName(name, false, cl);
             } catch (Throwable t) {
@@ -78,7 +102,7 @@ public final class ServletRequestAccessor {
             }
         }
 
-        private static MethodHandle find(MethodHandles.Lookup lookup, Class<?> owner, String name, MethodType type) {
+        static MethodHandle find(MethodHandles.Lookup lookup, Class<?> owner, String name, MethodType type) {
             if (owner == null) {
                 return null;
             }
