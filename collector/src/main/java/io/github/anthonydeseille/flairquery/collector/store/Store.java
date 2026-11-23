@@ -3,6 +3,7 @@ package io.github.anthonydeseille.flairquery.collector.store;
 import io.github.anthonydeseille.flairquery.collector.delta.Counters;
 import io.github.anthonydeseille.flairquery.collector.delta.DeltaCalculator.Delta;
 import io.github.anthonydeseille.flairquery.collector.plan.Attribution;
+import io.github.anthonydeseille.flairquery.collector.source.AgentSource;
 import io.github.anthonydeseille.flairquery.collector.source.ColumnStatsRow;
 import io.github.anthonydeseille.flairquery.collector.source.LogCursor;
 import io.github.anthonydeseille.flairquery.collector.source.StatementKey;
@@ -72,8 +73,16 @@ public final class Store {
 
     public record TableKey(String dbName, long relid) { }
 
+    public record EndpointKey(String app, String endpoint) { }
+
     public record State(Optional<SnapshotInfo> last, Map<StatementKey, Cursor> statements, Map<TableKey, Cursor> tables,
-                        Map<String, LogCursor> logCursors) { }
+                        Map<String, LogCursor> logCursors, Map<EndpointKey, Cursor> endpoints) {
+
+        public State(Optional<SnapshotInfo> last, Map<StatementKey, Cursor> statements, Map<TableKey, Cursor> tables,
+                     Map<String, LogCursor> logCursors) {
+            this(last, statements, tables, logCursors, Map.of());
+        }
+    }
 
     public State loadState(String target) throws SQLException {
         try (Connection c = connect()) {
@@ -128,7 +137,19 @@ public final class Store {
                     }
                 }
             }
-            return new State(last, statements, tables, logCursors);
+            Map<EndpointKey, Cursor> endpoints = new HashMap<>();
+            try (PreparedStatement ps = c.prepareStatement("""
+                    SELECT e.id, e.app, e.endpoint, c.requests, c.queries, c.sql_ms, c.http_ms
+                    FROM fq_endpoint_cursor c JOIN fq_endpoint e ON e.id = c.endpoint_id WHERE e.target = ?""")) {
+                ps.setString(1, target);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        endpoints.put(new EndpointKey(rs.getString(2), rs.getString(3)), new Cursor(rs.getLong(1),
+                                Counters.of(rs.getLong(4), rs.getLong(5), rs.getDouble(6), rs.getDouble(7))));
+                    }
+                }
+            }
+            return new State(last, statements, tables, logCursors, endpoints);
         }
     }
 
@@ -138,11 +159,25 @@ public final class Store {
 
     public record TableChange(TableRow row, Delta delta, boolean cursorChanged) { }
 
+    public record EndpointChange(AgentSource.EndpointRow row, Delta delta, boolean cursorChanged) { }
+
+    /** @param agentRead null when no agent is configured, false when it could not be read this cycle */
     public record Cycle(String target, Instant takenAt, Instant previousAt, boolean baseline, Instant statsReset,
                         boolean statsResetSeen, long deallocTotal, long deallocDelta, int statementCount,
                         double durationMs, List<StatementChange> statements, List<TableChange> tables,
                         Attribution.Result attribution, Map<String, LogCursor> logCursors, int logEntries,
-                        long logLagBytes, int logUnparsable) { }
+                        long logLagBytes, int logUnparsable, List<EndpointChange> endpoints, Boolean agentRead) {
+
+        public Cycle(String target, Instant takenAt, Instant previousAt, boolean baseline, Instant statsReset,
+                     boolean statsResetSeen, long deallocTotal, long deallocDelta, int statementCount,
+                     double durationMs, List<StatementChange> statements, List<TableChange> tables,
+                     Attribution.Result attribution, Map<String, LogCursor> logCursors, int logEntries,
+                     long logLagBytes, int logUnparsable) {
+            this(target, takenAt, previousAt, baseline, statsReset, statsResetSeen, deallocTotal, deallocDelta,
+                    statementCount, durationMs, statements, tables, attribution, logCursors, logEntries, logLagBytes,
+                    logUnparsable, List.of(), null);
+        }
+    }
 
     public long save(Cycle cycle) throws SQLException {
         try (Connection c = connect()) {
@@ -172,6 +207,15 @@ public final class Store {
                 }
                 upsertPlans(c, snapshotId, cycle.target(), cycle.takenAt(), cycle.attribution());
                 upsertLogCursors(c, cycle.target(), cycle.takenAt(), cycle.logCursors());
+                for (EndpointChange ch : cycle.endpoints()) {
+                    long endpointId = upsertEndpoint(c, cycle.target(), ch.row());
+                    if (ch.delta() != null) {
+                        insertEndpointDelta(c, snapshotId, endpointId, ch.delta());
+                    }
+                    if (ch.cursorChanged()) {
+                        upsertEndpointCursor(c, endpointId, ch.row().counters());
+                    }
+                }
                 c.commit();
                 return snapshotId;
             } catch (SQLException | RuntimeException e) {
@@ -185,8 +229,8 @@ public final class Store {
         try (PreparedStatement ps = c.prepareStatement("""
                 INSERT INTO fq_snapshot (target, taken_at, previous_at, baseline, stats_reset, stats_reset_seen,
                                          dealloc_total, dealloc_delta, statements, duration_ms,
-                                         log_entries, log_lag_bytes, log_unparsable)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id""")) {
+                                         log_entries, log_lag_bytes, log_unparsable, agent_read)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id""")) {
             ps.setString(1, cy.target());
             ps.setTimestamp(2, Timestamp.from(cy.takenAt()));
             setInstant(ps, 3, cy.previousAt());
@@ -200,6 +244,7 @@ public final class Store {
             ps.setInt(11, cy.logEntries());
             ps.setLong(12, cy.logLagBytes());
             ps.setInt(13, cy.logUnparsable());
+            if (cy.agentRead() == null) ps.setNull(14, Types.BOOLEAN); else ps.setBoolean(14, cy.agentRead());
             try (ResultSet rs = ps.executeQuery()) {
                 rs.next();
                 return rs.getLong(1);
@@ -404,6 +449,71 @@ public final class Store {
         }
     }
 
+    private static long upsertEndpoint(Connection c, String target, AgentSource.EndpointRow r) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("""
+                INSERT INTO fq_endpoint (target, app, endpoint) VALUES (?, ?, ?)
+                ON CONFLICT (target, app, endpoint) DO UPDATE SET app = excluded.app RETURNING id""")) {
+            ps.setString(1, target);
+            ps.setString(2, r.app());
+            ps.setString(3, r.endpoint());
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getLong(1);
+            }
+        }
+    }
+
+    private static void insertEndpointDelta(Connection c, long snapshotId, long endpointId, Delta d) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("""
+                INSERT INTO fq_endpoint_delta (snapshot_id, endpoint_id, requests, queries, sql_ms, http_ms, restarted)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""")) {
+            ps.setLong(1, snapshotId);
+            ps.setLong(2, endpointId);
+            ps.setLong(3, (long) d.values().get(0));
+            ps.setLong(4, (long) d.values().get(1));
+            ps.setDouble(5, d.values().get(2));
+            ps.setDouble(6, d.values().get(3));
+            ps.setBoolean(7, d.restarted());
+            ps.executeUpdate();
+        }
+    }
+
+    private static void upsertEndpointCursor(Connection c, long endpointId, Counters v) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("""
+                INSERT INTO fq_endpoint_cursor (endpoint_id, requests, queries, sql_ms, http_ms) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (endpoint_id) DO UPDATE SET requests = excluded.requests, queries = excluded.queries,
+                    sql_ms = excluded.sql_ms, http_ms = excluded.http_ms""")) {
+            ps.setLong(1, endpointId);
+            ps.setLong(2, (long) v.get(0));
+            ps.setLong(3, (long) v.get(1));
+            ps.setDouble(4, v.get(2));
+            ps.setDouble(5, v.get(3));
+            ps.executeUpdate();
+        }
+    }
+
+    /** HTTP requests (from the agent) per endpoint in the window. */
+    public Map<String, long[]> requestsByEndpoint(Connection c, String target, Instant from, Instant to) throws SQLException {
+        Map<String, long[]> out = new LinkedHashMap<>();
+        try (PreparedStatement ps = c.prepareStatement("""
+                SELECT e.endpoint, sum(d.requests), sum(d.queries), sum(d.sql_ms), sum(d.http_ms)
+                FROM fq_endpoint_delta d JOIN fq_snapshot sn ON sn.id = d.snapshot_id
+                JOIN fq_endpoint e ON e.id = d.endpoint_id
+                WHERE sn.target = ? AND sn.taken_at > ? AND sn.taken_at <= ?
+                GROUP BY e.endpoint""")) {
+            ps.setString(1, target);
+            ps.setTimestamp(2, Timestamp.from(from));
+            ps.setTimestamp(3, Timestamp.from(to));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.put(rs.getString(1), new long[]{rs.getLong(2), rs.getLong(3), Math.round(rs.getDouble(4) * 1000),
+                            Math.round(rs.getDouble(5) * 1000)});   // times in microseconds
+                }
+            }
+        }
+        return out;
+    }
+
     /** Retention: snapshots (and their deltas, by cascade) older than the cutoff. */
     public int deleteSnapshotsBefore(String target, Instant cutoff) throws SQLException {
         try (Connection c = connect();
@@ -523,6 +633,7 @@ public final class Store {
             ps.setString(1, target);
             ps.setTimestamp(2, Timestamp.from(since));
             List<Map<String, Object>> out = new ArrayList<>();
+            Map<String, long[]> requests = requestsByEndpoint(c, target, since, Instant.now());
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     Map<String, Object> m = new LinkedHashMap<>();
@@ -531,6 +642,13 @@ public final class Store {
                     m.put("executions", rs.getLong(3));
                     m.put("loggedTimeMs", round(rs.getDouble(4)));
                     m.put("distinctStatements", rs.getLong(5));
+                    long[] req = requests.get(rs.getString(2));
+                    if (req != null && req[0] > 0) {
+                        m.put("httpRequests", req[0]);
+                        m.put("executionsPerRequest", round((double) rs.getLong(3) / req[0]));
+                        m.put("loggedTimeMsPerRequest", round(rs.getDouble(4) / req[0]));
+                        m.put("httpTimeMsPerRequest", round(req[3] / 1000.0 / req[0]));
+                    }
                     m.put("statements", endpointStatements(c, target, since, rs.getString(1), rs.getString(2),
                             statementsPerEndpoint));
                     out.add(m);
@@ -849,8 +967,18 @@ public final class Store {
 
     public record EndpointUse(StatementId statement, String app, String endpoint, long executions, double totalMs) { }
 
+    /**
+     * @param requests per endpoint: {HTTP requests, statements, SQL time us, HTTP time us} from the agent;
+     *                 empty when no agent was read in the period
+     */
     public record PeriodData(Period period, int snapshots, boolean baselineOrReset, Map<Long, StatementTotals> statements,
-                             List<PlanUse> plans, List<EndpointUse> endpoints) { }
+                             List<PlanUse> plans, List<EndpointUse> endpoints, Map<String, long[]> requests) {
+
+        public PeriodData(Period period, int snapshots, boolean baselineOrReset, Map<Long, StatementTotals> statements,
+                          List<PlanUse> plans, List<EndpointUse> endpoints) {
+            this(period, snapshots, baselineOrReset, statements, plans, endpoints, Map.of());
+        }
+    }
 
     public PeriodData periodData(String target, Period p) throws SQLException {
         try (Connection c = connect()) {
@@ -926,7 +1054,8 @@ public final class Store {
                     }
                 }
             }
-            return new PeriodData(p, snapshots, irregular, statements, plans, endpoints);
+            return new PeriodData(p, snapshots, irregular, statements, plans, endpoints,
+                    requestsByEndpoint(c, target, p.start(), p.end()));
         }
     }
 

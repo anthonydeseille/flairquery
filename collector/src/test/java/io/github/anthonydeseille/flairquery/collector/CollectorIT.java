@@ -68,7 +68,7 @@ class CollectorIT {
     @BeforeEach
     void freshStoreAndStats() throws Exception {
         try (Connection c = store.connect(); Statement st = c.createStatement()) {
-            st.execute("TRUNCATE fq_snapshot, fq_statement, fq_table, fq_plan, fq_log_cursor, fq_mark, fq_column_stats CASCADE");
+            st.execute("TRUNCATE fq_snapshot, fq_statement, fq_table, fq_plan, fq_log_cursor, fq_mark, fq_column_stats, fq_endpoint CASCADE");
         }
         app("SELECT pg_stat_statements_reset()");
         Thread.sleep(50);
@@ -326,6 +326,68 @@ class CollectorIT {
                 .containsEntry("nullFrac", 0.0);
         assertThat(columns.toString()).doesNotContain("a42", "a1,", "top-secret");   // no data value stored
         app("DROP TABLE never_queried");
+    }
+
+    /** A fake agent: serves /fq/endpoints with counters set by the test. */
+    static final class FakeAgent implements AutoCloseable {
+        final com.sun.net.httpserver.HttpServer server;
+        volatile long requests;
+        volatile long queries;
+
+        FakeAgent() throws Exception {
+            server = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 4);
+            server.createContext("/fq/endpoints", ex -> {
+                byte[] body = ("{\"schemaVersion\":1,\"app\":\"demo\",\"endpoints\":[{\"endpoint\":\"GET /authors\","
+                        + "\"requests\":" + requests + ",\"queries\":" + queries + ",\"sqlTimeMs\":" + (requests * 2.5)
+                        + ",\"httpTimeMs\":" + (requests * 10.0) + "}]}").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                ex.sendResponseHeaders(200, body.length);
+                try (var os = ex.getResponseBody()) {
+                    os.write(body);
+                }
+            });
+            server.start();
+        }
+
+        String url() {
+            return "http://127.0.0.1:" + server.getAddress().getPort();
+        }
+
+        @Override
+        public void close() {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void agentRequestCountsGiveDeltasSurviveRestartsAndNeverFailACycle() throws Exception {
+        Target target = new Target("it", observed.getJdbcUrl(), "fq_reader", "fq_reader");
+        try (FakeAgent agent = new FakeAgent()) {
+            Collector withAgent = new Collector(new PostgresSource(target), null,
+                    new io.github.anthonydeseille.flairquery.collector.source.AgentSource(agent.url()),
+                    store, Duration.ofHours(72), Duration.ZERO, Clock.systemUTC());
+            agent.requests = 100;                        // since the agent started: not counted (baseline)
+            agent.queries = 2200;
+            withAgent.collectOnce();
+            agent.requests = 110;
+            agent.queries = 2420;
+            withAgent.collectOnce();                     // +10 requests, +220 statements
+            agent.requests = 4;                          // agent restarted: 4 requests since its start
+            agent.queries = 88;
+            withAgent.collectOnce();
+            assertThat(withAgent.agentUp()).isEqualTo(1);
+
+            try (Connection c = store.connect()) {
+                long[] r = store.requestsByEndpoint(c, "it", Instant.EPOCH, Instant.now()).get("GET /authors");
+                assertThat(r[0]).isEqualTo(14);          // 10 + 4, never 4 - 110
+                assertThat(r[1]).isEqualTo(308);
+            }
+        }
+        // agent gone: the cycle still succeeds, the gauge says so
+        Collector orphan = new Collector(new PostgresSource(target), null,
+                new io.github.anthonydeseille.flairquery.collector.source.AgentSource("http://127.0.0.1:1"),
+                store, Duration.ofHours(72), Duration.ZERO, Clock.systemUTC());
+        assertThat(orphan.collectOnce()).isNotNull();
+        assertThat(orphan.agentUp()).isZero();
     }
 
     @Test

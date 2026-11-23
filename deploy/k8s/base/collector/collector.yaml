@@ -45,6 +45,9 @@ spec:
               valueFrom: {secretKeyRef: {name: fq-store-credentials, key: POSTGRES_PASSWORD}}
             - name: FQ_COLLECTOR_INTERVAL
               value: "30"
+            # the agent of the observed service: HTTP request counts, for per-request comparisons
+            - name: FQ_COLLECTOR_AGENT_URL
+              value: http://demo-app:9464
           ports:
             - name: http
               containerPort: 9465

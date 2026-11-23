@@ -28,6 +28,8 @@ public final class CollectorMain {
         Target target = config.targets().get(0);
         Collector collector = new Collector(new PostgresSource(target),
                 config.readPlans() ? new SqlLogPlanSource(target, config.logMaxBytesPerCycle()) : null,
+                config.agentUrl() == null ? null
+                        : new io.github.anthonydeseille.flairquery.collector.source.AgentSource(config.agentUrl()),
                 store, config.retention(), config.columnStatsInterval(), Clock.systemUTC());
         CollectorHttpServer http = new CollectorHttpServer(collector, store);
         int port = http.start(config.httpPort());
@@ -41,7 +43,8 @@ public final class CollectorMain {
 
         Log.info("collector started", "target", config.targets().get(0).toString(), "intervalSeconds",
                 config.interval().toSeconds(), "retentionHours", config.retention().toHours(), "httpPort", port, "plans", config.readPlans(),
-                "columnStatsMinutes", config.columnStatsInterval().toMinutes());
+                "columnStatsMinutes", config.columnStatsInterval().toMinutes(),
+                "agent", config.agentUrl() == null ? "none" : config.agentUrl());
     }
 
     private static void migrateWithRetry(Store store) throws Exception {

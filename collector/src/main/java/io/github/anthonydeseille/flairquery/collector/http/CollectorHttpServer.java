@@ -228,6 +228,11 @@ public final class CollectorHttpServer {
               .append("# HELP fq_collector_column_stats Columns with pg_stats statistics stored\n")
               .append("# TYPE fq_collector_column_stats gauge\n")
               .append("fq_collector_column_stats{target=\"").append(t).append("\"} ").append(collector.columnStats()).append('\n');
+            if (collector.agentUp() >= 0) {
+                sb.append("# HELP fq_collector_agent_up 1 when the agent endpoints were read on the last cycle\n")
+                  .append("# TYPE fq_collector_agent_up gauge\n")
+                  .append("fq_collector_agent_up{target=\"").append(t).append("\"} ").append(collector.agentUp()).append('\n');
+            }
             send(ex, 200, "text/plain; version=0.0.4; charset=utf-8", sb.toString().getBytes(StandardCharsets.UTF_8));
         } catch (Exception e) {
             Log.warn("metrics failed", e);

@@ -19,8 +19,9 @@ import java.util.Set;
 
 /**
  * Before / after comparison of two periods: per statement (pg_stat_statements deltas + plan shapes from
- * auto_explain), per endpoint (auto_explain attribution) and in total. Values are totals over each
- * period: they are comparable when both periods ran the same traffic (e.g. one `make traffic-local` each).
+ * auto_explain), per endpoint (auto_explain attribution + HTTP request counts from the agent) and in total.
+ * With the agent, values are also given per HTTP request, so periods with different traffic compare;
+ * without it, totals are only comparable when both periods ran the same traffic.
  */
 public final class Comparison {
 
@@ -36,7 +37,13 @@ public final class Comparison {
         out.put("endpoints", endpoints(before, after));
         out.put("statements", statements(before, after, limit));
         List<String> notes = new ArrayList<>();
-        notes.add("Totals over each period: compare periods that ran the same traffic.");
+        if (requests(before) > 0 && requests(after) > 0) {
+            notes.add("Per-request values use the HTTP request counts read from the agent (" + requests(before)
+                    + " requests before, " + requests(after) + " after): they compare even if the traffic differs.");
+        } else {
+            notes.add("Totals over each period: compare periods that ran the same traffic"
+                    + " (set FQ_COLLECTOR_AGENT_URL to get per-request values).");
+        }
         if (before.baselineOrReset() || after.baselineOrReset()) {
             notes.add("A period contains a baseline cycle, a statistics reset or evicted statements: "
                     + "some activity may be missing from it.");
@@ -65,8 +72,15 @@ public final class Comparison {
         return withChange(b, a);
     }
 
+    static long requests(PeriodData d) {
+        long n = 0;
+        for (long[] r : d.requests().values()) n += r[0];
+        return n;
+    }
+
     private static Map<String, Double> sum(PeriodData d) {
         Map<String, Double> m = new LinkedHashMap<>();
+        if (!d.requests().isEmpty()) m.put("httpRequests", (double) requests(d));
         m.put("statements", (double) d.statements().size());
         m.put("calls", 0.0);
         m.put("totalTimeMs", 0.0);
@@ -143,7 +157,8 @@ public final class Comparison {
             m.putAll(withChange(b.get(k), a.get(k)));
             out.add(m);
         }
-        out.sort(Comparator.comparingDouble(m -> -Math.abs(gain(m, "loggedTimeMs"))));
+        boolean perRequest = requests(before) > 0 && requests(after) > 0;
+        out.sort(Comparator.comparingDouble(m -> -Math.abs(gain(m, perRequest ? "sqlTimeMsPerRequest" : "loggedTimeMs"))));
         return out;
     }
 
@@ -164,6 +179,17 @@ public final class Comparison {
             distinct.computeIfAbsent(key, x -> new HashSet<>()).add(e.statement());
         }
         distinct.forEach((k, s) -> out.get(k).put("distinctStatements", (double) s.size()));
+        // the agent's view: HTTP requests, statements and SQL / HTTP time per request
+        for (Map.Entry<String, long[]> e : d.requests().entrySet()) {
+            long[] r = e.getValue();
+            if (r[0] == 0) continue;
+            Map<String, Double> m = out.computeIfAbsent(e.getKey(), x -> new LinkedHashMap<>());
+            m.put("httpRequests", (double) r[0]);
+            m.put("statementsPerRequest", (double) r[1] / r[0]);
+            m.put("sqlTimeMsPerRequest", r[2] / 1000.0 / r[0]);
+            m.put("httpTimeMsPerRequest", r[3] / 1000.0 / r[0]);
+            if (m.containsKey("executions")) m.put("loggedTimeMsPerRequest", m.get("loggedTimeMs") / r[0]);
+        }
         return out;
     }
 
@@ -184,13 +210,24 @@ public final class Comparison {
             m.put("sql", any.sql);
             m.put("status", b == null ? "new" : a == null ? "gone" : "both");
             m.put("endpoints", endpointsOf(any.id, before, after, any.endpoint));
-            m.putAll(withChange(values(b), values(a)));
+            List<String> eps = endpointsOf(any.id, before, after, any.endpoint);
+            m.putAll(withChange(perRequest(values(b), eps, before), perRequest(values(a), eps, after)));
             m.put("plans", plans(any.id, before, after));
             if ((b != null && b.restarted) || (a != null && a.restarted)) m.put("countersRestarted", true);
             out.add(m);
         }
         out.sort(Comparator.comparingDouble(m -> -Math.abs(gain(m, "totalTimeMs"))));
         return out.size() > limit ? out.subList(0, limit) : out;
+    }
+
+    /** Adds callsPerRequest / timeMsPerRequest when the statement belongs to one endpoint with known requests. */
+    private static Map<String, Double> perRequest(Map<String, Double> v, List<String> endpoints, PeriodData d) {
+        if (v == null || endpoints.size() != 1) return v;
+        long[] r = d.requests().get(endpoints.get(0));
+        if (r == null || r[0] == 0) return v;
+        v.put("callsPerRequest", v.get("calls") / r[0]);
+        v.put("timeMsPerRequest", v.get("totalTimeMs") / r[0]);
+        return v;
     }
 
     private static List<String> endpointsOf(StatementId id, PeriodData before, PeriodData after, String firstTag) {

@@ -474,6 +474,7 @@ configuration) — `make collector-local` re-applies the `fq_reader` grants itse
 | `FQ_COLLECTOR_PLANS` | `true` | read auto_explain plans from the JSON server log |
 | `FQ_COLLECTOR_LOG_MAX_MB` | `64` | maximum log read per cycle (the rest is read next cycle) |
 | `FQ_COLLECTOR_COLUMN_STATS_MINUTES` | `10` | minutes between `pg_stats` reads (`0`: disabled) |
+| `FQ_COLLECTOR_AGENT_URL` | *(none)* | agent of the observed service (`http://demo-app:9464`): HTTP request counts per endpoint, so comparisons are also given per request |
 
 ### PostgreSQL settings and their cost
 

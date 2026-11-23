@@ -102,6 +102,54 @@ class ComparisonTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void withAgentRequestCountsValuesArePerRequest() {
+        // twice the traffic after, same cost per request for /authors, half the statements per request for /books
+        PeriodData before = new PeriodData(new Period("before", T0, T0.plusSeconds(60)), 3, false,
+                Map.of(2L, totals(2, AUTHOR_BOOKS, 200, 100, 0)), List.of(),
+                List.of(new EndpointUse(AUTHOR_BOOKS, "demo", "GET /authors", 200, 100)),
+                Map.of("GET /authors", new long[]{10, 220, 100_000, 300_000}, "GET /books", new long[]{10, 450, 50_000, 90_000}));
+        PeriodData after = new PeriodData(new Period("after", T0, T0.plusSeconds(60)), 3, false,
+                Map.of(2L, totals(2, AUTHOR_BOOKS, 400, 200, 0)), List.of(),
+                List.of(new EndpointUse(AUTHOR_BOOKS, "demo", "GET /authors", 400, 200)),
+                Map.of("GET /authors", new long[]{20, 440, 200_000, 600_000}, "GET /books", new long[]{20, 450, 40_000, 80_000}));
+
+        Map<String, Object> c = Comparison.of(before, after, 20);
+
+        assertThat((List<String>) c.get("notes")).anyMatch(n -> n.contains("Per-request values") && n.contains("20 requests before, 40 after"));
+        Map<String, Object> totals = (Map<String, Object>) c.get("totals");
+        assertThat(((Map<String, Object>) totals.get("before")).get("httpRequests")).isEqualTo(20L);
+
+        Map<String, Object> books = ((List<Map<String, Object>>) c.get("endpoints")).stream()
+                .filter(e -> e.get("endpoint").equals("GET /books")).findFirst().orElseThrow();
+        assertThat((Map<String, Object>) books.get("before")).containsEntry("statementsPerRequest", 45L);
+        assertThat((Map<String, Object>) books.get("after")).containsEntry("statementsPerRequest", 22.5);
+        assertThat(((Map<String, Object>) books.get("changePct")).get("statementsPerRequest")).isEqualTo(-50.0);
+
+        Map<String, Object> authors = ((List<Map<String, Object>>) c.get("endpoints")).stream()
+                .filter(e -> e.get("endpoint").equals("GET /authors")).findFirst().orElseThrow();
+        assertThat(((Map<String, Object>) authors.get("changePct")).get("sqlTimeMsPerRequest")).isEqualTo(0.0);
+        assertThat(((Map<String, Object>) authors.get("changePct")).get("executions")).isEqualTo(100.0);   // total doubled
+
+        Map<String, Object> stmt = ((List<Map<String, Object>>) c.get("statements")).get(0);
+        assertThat((Map<String, Object>) stmt.get("before")).containsEntry("callsPerRequest", 20L);
+        assertThat(((Map<String, Object>) stmt.get("changePct")).get("callsPerRequest")).isEqualTo(0.0);
+    }
+
+    @Test
+    void agentEndpointsAreParsed() throws Exception {
+        var rows = io.github.anthonydeseille.flairquery.collector.source.AgentSource.parse("""
+                {"schemaVersion":1,"app":"demo-app","endpoints":[
+                 {"endpoint":"GET /authors","requests":12,"queries":264,"sqlTimeMs":80.5,"httpTimeMs":200.25}]}""");
+        assertThat(rows).singleElement().satisfies(r -> {
+            assertThat(r.app()).isEqualTo("demo-app");
+            assertThat(r.endpoint()).isEqualTo("GET /authors");
+            assertThat(r.counters().get(0)).isEqualTo(12);
+            assertThat(r.counters().get(3)).isEqualTo(200.25);
+        });
+    }
+
+    @Test
     void periodsFromMarksAndInstants() {
         List<Mark> marks = List.of(new Mark("before", null, T0, 1L), new Mark("fix", null, T0.plusSeconds(100), 2L));
         Instant now = T0.plusSeconds(500);

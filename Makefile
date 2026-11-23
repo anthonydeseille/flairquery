@@ -73,6 +73,7 @@ collector-local: jars ## Collector on the host against the local Compose databas
 	$(MAKE) --no-print-directory db-grants-local
 	FQ_COLLECTOR_TARGET_URL=jdbc:postgresql://localhost:5432/flairquery FQ_COLLECTOR_TARGET_NAME=local \
 	FQ_COLLECTOR_STORE_URL=jdbc:postgresql://localhost:5433/fqstore FQ_COLLECTOR_INTERVAL=$(or $(INTERVAL),30) \
+	FQ_COLLECTOR_AGENT_URL=$(or $(AGENT_URL),http://localhost:9464) \
 	  java -jar collector/target/flairquery-collector.jar
 
 .PHONY: demo-local seed-local traffic-local demo-local-clean

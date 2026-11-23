@@ -6,3 +6,5 @@ databaseChangeLog:
       file: db/store/002-auto-explain.sql
   - include:
       file: db/store/003-stats-marks.sql
+  - include:
+      file: db/store/004-agent-endpoints.sql

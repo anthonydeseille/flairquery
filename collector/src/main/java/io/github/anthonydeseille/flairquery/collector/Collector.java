@@ -28,6 +28,7 @@ public final class Collector {
     private final Duration retention;
     private final Clock clock;
     private final Duration columnStatsInterval;   // zero: pg_stats not read
+    private final io.github.anthonydeseille.flairquery.collector.source.AgentSource agentSource;   // null: none
     private Instant lastColumnStats;
 
     final AtomicLong columnStats = new AtomicLong();
@@ -40,6 +41,13 @@ public final class Collector {
 
     public Collector(PostgresSource source, PlanSource planSource, Store store, Duration retention,
                      Duration columnStatsInterval, Clock clock) {
+        this(source, planSource, null, store, retention, columnStatsInterval, clock);
+    }
+
+    public Collector(PostgresSource source, PlanSource planSource,
+                     io.github.anthonydeseille.flairquery.collector.source.AgentSource agentSource, Store store,
+                     Duration retention, Duration columnStatsInterval, Clock clock) {
+        this.agentSource = agentSource;
         this.columnStatsInterval = columnStatsInterval;
         this.source = source;
         this.planSource = planSource;
@@ -57,6 +65,9 @@ public final class Collector {
     public Instant lastSuccess() { return lastSuccess.get(); }
     public long logLag() { return logLag.get(); }
     public long columnStats() { return columnStats.get(); }
+    /** -1: no agent configured, 0: not read on the last cycle, 1: read. */
+    public int agentUp() { return agentSource == null ? -1 : agentUp; }
+    private volatile int agentUp;
     public double lastCycleSeconds() { return lastCycleMicros.get() / 1e6; }
 
     /** Never throws: a failed cycle is logged and counted, the next one retries. */
@@ -126,11 +137,36 @@ public final class Collector {
             }
         }
 
+        // agent: HTTP requests per endpoint (an enrichment: never fails the cycle)
+        List<Store.EndpointChange> endpoints = new ArrayList<>();
+        Boolean agentRead = null;
+        if (agentSource != null) {
+            try {
+                boolean agentBaseline = baseline || state.endpoints().isEmpty();   // first contact: cursors only
+                for (var row : agentSource.read()) {
+                    Store.Cursor cursor = state.endpoints().get(new Store.EndpointKey(row.app(), row.endpoint()));
+                    Delta delta = agentBaseline ? null
+                            : DeltaCalculator.compute(cursor == null ? null : cursor.counters(), row.counters(), false);
+                    boolean cursorChanged = cursor == null || !cursor.counters().equals(row.counters());
+                    if (delta != null || cursorChanged) {
+                        endpoints.add(new Store.EndpointChange(row, delta, cursorChanged));
+                    }
+                }
+                agentRead = true;
+                agentUp = 1;
+            } catch (Exception e) {
+                agentRead = false;
+                agentUp = 0;
+                Log.warn("agent endpoints not readable this cycle (per-request figures unavailable)", e,
+                        "target", target(), "agent", agentSource.uri().toString());
+            }
+        }
+
         double durationMs = (System.nanoTime() - started) / 1e6;
         Store.Cycle cycle = new Store.Cycle(target(), now, state.last().map(Store.SnapshotInfo::takenAt).orElse(null),
                 baseline, reading.info().statsReset(), resetSeen, reading.info().dealloc(), deallocDelta,
                 reading.statements().size(), durationMs, statements, tables, attribution, cursors, logEntries,
-                logLag.get(), unparsable);
+                logLag.get(), unparsable, endpoints, agentRead);
         store.save(cycle);
         int purged = store.deleteSnapshotsBefore(target(), now.minus(retention));
 

@@ -16,6 +16,7 @@ public record CollectorConfig(
         boolean readPlans,
         long logMaxBytesPerCycle,
         Duration columnStatsInterval,
+        String agentUrl,
         boolean debug) {
 
     public static CollectorConfig fromEnv(Map<String, String> env) {
@@ -36,6 +37,7 @@ public record CollectorConfig(
                 !"false".equalsIgnoreCase(env.getOrDefault("FQ_COLLECTOR_PLANS", "true")),
                 positive(env, "FQ_COLLECTOR_LOG_MAX_MB", 64) * 1024 * 1024,
                 Duration.ofMinutes(positive(env, "FQ_COLLECTOR_COLUMN_STATS_MINUTES", 10)),
+                blankToNull(env.get("FQ_COLLECTOR_AGENT_URL")),
                 "debug".equalsIgnoreCase(env.getOrDefault("FQ_COLLECTOR_LOG_LEVEL", "info")));
     }
 
@@ -43,6 +45,10 @@ public record CollectorConfig(
         String rest = jdbcUrl.replaceFirst("^jdbc:postgresql://", "");
         int end = rest.indexOf('/');
         return end > 0 ? rest.substring(0, end) : rest;
+    }
+
+    private static String blankToNull(String v) {
+        return v == null || v.isBlank() ? null : v.trim();
     }
 
     private static String required(Map<String, String> env, String key) {
