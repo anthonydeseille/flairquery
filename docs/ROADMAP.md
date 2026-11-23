@@ -1,75 +1,75 @@
-# Roadmap FlairQuery
+# FlairQuery roadmap
 
-## Phase 1 — Captation
-Agent Java, tagging SQL (endpoint + caller), détection N+1, métriques, démo sur kind, plugin K9s.
+## Phase 1 — Capture
+Java agent, SQL tagging (endpoint + caller), N+1 detection, metrics, demo on kind, K9s plugin.
 
-## Phase 2 — Collector Postgres
-- Lecture périodique de `pg_stat_statements`, `auto_explain`, `pg_stat_user_tables`, `pg_stats`
-- Corrélation via le tag `fq:` → endpoint + caller
-- Stockage de l'historique (snapshots) pour mesurer les gains avant/après
+## Phase 2 — PostgreSQL collector
+- Periodic reads of `pg_stat_statements`, `auto_explain`, `pg_stat_user_tables`, `pg_stats`
+- Correlation through the `fq:` tag → endpoint + caller
+- History storage (snapshots) to measure before/after gains
 
-## Phase 3 — Profil par endpoint
-- Par endpoint : nb de requêtes, temps SQL, lignes ramenées, entités chargées vs utilisées
-- Détection EAGER inutile :
-  - statique : scan des mappings (`@ManyToOne` / `@OneToOne` EAGER par défaut)
-  - dynamique : instrumentation des getters d'associations → association chargée mais jamais lue
-- Détection sur-fetch (entités complètes chargées vs champs sérialisés)
-- Détection `JOIN FETCH` + pagination, `open-in-view=true`
+## Phase 3 — Per-endpoint profile
+- Per endpoint: number of statements, SQL time, rows returned, entities loaded vs used
+- Useless EAGER detection:
+  - static: scan of mappings (`@ManyToOne` / `@OneToOne` EAGER by default)
+  - dynamic: instrumentation of association getters → association loaded but never read
+- Over-fetching detection (full entities loaded vs serialized fields)
+- Detection of `JOIN FETCH` + pagination and `open-in-view=true`
 
-## Phase 4 — Analyzer LLM
-- Entrées : code source (entité, repository, service), plan, schéma, profil endpoint
-- Propositions : LAZY + `@EntityGraph` / `JOIN FETCH` par cas d'usage, projections DTO,
-  `@BatchSize` / `default_batch_fetch_size`, réécriture `@Query`, index (changeset Liquibase,
+## Phase 4 — LLM analyzer
+- Inputs: source code (entity, repository, service), plan, schema, endpoint profile
+- Proposals: LAZY + `@EntityGraph` / `JOIN FETCH` per use case, DTO projections,
+  `@BatchSize` / `default_batch_fetch_size`, `@Query` rewrites, indexes (Liquibase changeset,
   `CREATE INDEX CONCURRENTLY`)
-- LLM configurable : API externe ou local (Ollama)
-- Validation automatique obligatoire avant toute proposition :
-  - snapshot JSON de la réponse strictement identique
-  - nombre de requêtes et temps SQL en baisse (test d'intégration)
-  - index validés par HypoPG ; réécritures SQL validées en shadow-run sur réplica (hash des résultats)
+- Configurable LLM: external API or local (Ollama)
+- Mandatory automatic validation before any proposal:
+  - strictly identical JSON snapshot of the response
+  - fewer statements and less SQL time (integration test)
+  - indexes validated with HypoPG; SQL rewrites validated by a shadow run on a replica (result hashes)
 
 ## Phase 5 — Merge requests
-- Ouverture via API GitLab/GitHub, une MR par correctif
-- Description : problème, preuve (avant/après), plan, tests ajoutés
-- Aucun merge ni déploiement automatique : revue humaine obligatoire
+- Opened through the GitLab/GitHub API, one MR per fix
+- Description: problem, proof (before/after), plan, added tests
+- No automatic merge or deployment: human review is mandatory
 
-## Phase 6 — Redimensionnement infra
-- Pods API : requests/limits depuis le p95 réel, throttling CPU, heap/GC JVM,
-  `MaxRAMPercentage` cohérent avec la limite mémoire ; VPA en mode recommendation comme source
-- Base : `work_mem` (via `temp_blks_written`), `shared_buffers`, `effective_cache_size`
-- Contrôle croisé : pool Hikari × replicas ≤ `max_connections`
-- Toujours après les correctifs de code (ne pas dimensionner du gaspillage)
-- Sortie : MR sur manifestes Kustomize/Helm (Postgres sur K8s, ex. CloudNativePG) ou Terraform (base managée)
-- Déploiement progressif (canary) + rollback auto ; jamais de modification à chaud
+## Phase 6 — Infrastructure right-sizing
+- API pods: requests/limits from the real p95, CPU throttling, JVM heap/GC,
+  `MaxRAMPercentage` consistent with the memory limit; VPA in recommendation mode as a source
+- Database: `work_mem` (from `temp_blks_written`), `shared_buffers`, `effective_cache_size`
+- Cross-check: Hikari pool × replicas ≤ `max_connections`
+- Always after the code fixes (never size for waste)
+- Output: MR on Kustomize/Helm manifests (PostgreSQL on K8s, e.g. CloudNativePG) or Terraform (managed database)
+- Progressive rollout (canary) + automatic rollback; never a live change
 
-### Option « filet de sécurité mémoire » (hausse temporaire)
-Permet de tenir en attendant que le correctif soit codé, mergé et déployé.
-- Plancher = config de base : jamais de baisse automatique en dessous
-- Plafond obligatoire (défaut ×2, configurable) + respect du `ResourceQuota` du namespace
-- Hausse uniquement sur signaux réels : OOMKilled, pression GC, heap > 85 % soutenu
-- Hausse appliquée par rolling restart (la JVM fixe son heap au démarrage ;
-  `MaxRAMPercentage` × nouvelle limite)
-- Détection de fuite : si la consommation remonte après une hausse → stop, plus de hausse, alerte
-- Passe par Git : commit dans un overlay `fq-override` (merge auto autorisé car borné),
-  sinon ArgoCD/Flux annule la modification
-- Override lié à la MR du correctif : retiré automatiquement une fois la MR mergée, déployée
-  et la consommation revenue à la normale → retour à la config de base
-- Expiration : si le correctif n'est pas déployé après N jours → alerte (pas de rollback brutal)
-- Traçabilité : chaque hausse = un commit avec justification (métriques + lien MR)
-- Implémentation possible via un VPA piloté (`minAllowed` = base, `maxAllowed` = plafond) ;
-  attention aux conflits avec un HPA sur CPU
-- Base de données : uniquement les paramètres rechargeables sans restart (ex. `work_mem` par rôle) ;
-  `shared_buffers` et tout ce qui impose un restart du primaire reste en MR avec revue humaine
+### "Memory safety net" option (temporary increase)
+Keeps the service running while the fix is written, merged and deployed.
+- Floor = base configuration: never an automatic decrease below it
+- Mandatory ceiling (default ×2, configurable) + compliance with the namespace `ResourceQuota`
+- Increase only on real signals: OOMKilled, GC pressure, sustained heap > 85 %
+- Increase applied through a rolling restart (the JVM sets its heap at startup;
+  `MaxRAMPercentage` × new limit)
+- Leak detection: if consumption climbs again after an increase → stop, no further increase, alert
+- Goes through Git: commit in an `fq-override` overlay (auto-merge allowed because it is bounded),
+  otherwise ArgoCD/Flux reverts the change
+- Override tied to the fix's MR: removed automatically once the MR is merged, deployed and consumption
+  is back to normal → back to the base configuration
+- Expiry: if the fix is not deployed after N days → alert (no abrupt rollback)
+- Traceability: every increase = one commit with its justification (metrics + MR link)
+- Possible implementation with a driven VPA (`minAllowed` = base, `maxAllowed` = ceiling);
+  beware of conflicts with a CPU-based HPA
+- Database: only parameters reloadable without a restart (e.g. `work_mem` per role);
+  `shared_buffers` and anything requiring a primary restart stays in an MR with human review
 
-## Phase 7 — Opérateur Kubernetes
-- CRD `FlairQuery` (cible par labels, seuils, base-packages, base associée)
-- Webhook d'admission qui injecte l'agent (remplace l'initContainer manuel)
-- Collector / analyzer en Deployment et CronJob ; résultats dans le `status` de la CRD
-- Déploiement des correctifs via GitOps (ArgoCD/Flux) uniquement
+## Phase 7 — Kubernetes operator
+- `FlairQuery` CRD (target by labels, thresholds, base packages, associated database)
+- Admission webhook injecting the agent (replaces the manual initContainer)
+- Collector / analyzer as a Deployment and CronJob; results in the CRD `status`
+- Fixes deployed through GitOps (ArgoCD/Flux) only
 
-## Principes transverses
-- Lecture seule sur la prod ; aucune réécriture SQL à chaud
-- Seule exception aux modifications automatiques : la hausse mémoire bornée, temporaire,
-  tracée dans Git, jamais de baisse automatique sous la config de base
-- Fail-safe : l'outil ne doit jamais impacter l'application observée
-- Chaque recommandation est prouvée (mesure ou planner), jamais seulement « suggérée par le LLM »
-- `demo-app/TRAPS.md` sert de vérité terrain : taux de détection et de correction mesuré à chaque phase
+## Cross-cutting principles
+- Read-only on production; no live SQL rewriting
+- Only exception to automatic changes: the bounded, temporary memory increase,
+  traced in Git, never an automatic decrease below the base configuration
+- Fail-safe: the tool must never impact the observed application
+- Every recommendation is proven (measurement or planner), never merely "suggested by the LLM"
+- `demo-app/TRAPS.md` is the ground truth: detection and fix rates measured at every phase

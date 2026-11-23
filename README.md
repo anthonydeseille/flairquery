@@ -1,185 +1,186 @@
 # FlairQuery
 
-**Analyse des requêtes SQL et des endpoints d'applications Java / Spring / JPA, sur Kubernetes.**
+**SQL and endpoint analysis for Java / Spring / JPA applications, on Kubernetes.**
 
-Un agent Java instrumente l'application **sans modification de code** et tague chaque requête SQL avec
-l'endpoint HTTP et la ligne de code appelante :
+> **"Agent" means a Java agent here, not an AI agent.** The FlairQuery agent is a jar loaded with
+> `-javaagent:` that instruments bytecode (ByteBuddy), like OpenTelemetry or JaCoCo agents. Its behaviour is
+> fully deterministic, and **no LLM is involved in phase 1**. An LLM only appears in phase 4, in a separate
+> component (the analyzer), and every proposal it makes must be proven by measurements.
+
+The agent instruments the application **without any code change** and tags every SQL statement with the
+HTTP endpoint and the calling line of code:
 
 ```sql
 /* fq:app=demo-app,endpoint=GET /authors,caller=io.github.anthonydeseille.flairquery.demo.web.AuthorController#toDto:47 */
 select b1_0.author_id, ... from book b1_0 left join publisher p1_0 on ... where b1_0.author_id=?
 ```
 
-Il mesure le nombre et le temps des requêtes par requête HTTP et détecte les **N+1**. Il expose aussi
-des métriques Prometheus et des vues JSON. Les phases suivantes ajouteront la corrélation avec
-`pg_stat_statements` / `auto_explain`, le profil par endpoint, les correctifs prouvés proposés en merge
-request, le redimensionnement de l'infrastructure et un opérateur Kubernetes : voir
-[docs/ROADMAP.md](docs/ROADMAP.md).
+It also counts and times SQL statements per HTTP request, detects **N+1** patterns, and exposes Prometheus
+metrics and JSON views. Later phases add correlation with `pg_stat_statements` / `auto_explain`,
+per-endpoint profiles, proven fixes opened as merge requests, infrastructure right-sizing and a Kubernetes
+operator: see [docs/ROADMAP.md](docs/ROADMAP.md).
 
-> **Contraintes non négociables** : lecture seule sur la base, aucune réécriture SQL autre que le
-> commentaire de tag, fail-safe absolu (l'outil n'impacte jamais l'application observée), désactivable
-> entièrement (`FQ_ENABLED=false`), aucune dépendance externe ni LLM en phase 1.
+> **Non-negotiable constraints**: read-only on the database, no SQL rewriting other than the tag comment,
+> absolute fail-safe (the tool never impacts the observed application), can be fully disabled
+> (`FQ_ENABLED=false`), no external service and no LLM in phase 1.
 
-## Sommaire
+## Contents
 
-- [État de la phase 1](#état-de-la-phase-1)
-- [Contenu du dépôt](#contenu-du-dépôt)
-- [Démarrage rapide (local, sans Kubernetes)](#démarrage-rapide-local-sans-kubernetes)
-- [Installer l'agent sur une application](#installer-lagent-sur-une-application)
+- [Phase 1 status](#phase-1-status)
+- [Repository layout](#repository-layout)
+- [Quick start (local, no Kubernetes)](#quick-start-local-no-kubernetes)
+- [Installing the agent on an application](#installing-the-agent-on-an-application)
 - [Configuration](#configuration)
-- [Le tag SQL](#le-tag-sql)
-- [Endpoints HTTP et exemples de sortie](#endpoints-http-et-exemples-de-sortie)
-- [Demo-app et pièges](#demo-app-et-pièges)
+- [The SQL tag](#the-sql-tag)
+- [HTTP endpoints and sample output](#http-endpoints-and-sample-output)
+- [Demo app and traps](#demo-app-and-traps)
 - [Corpus](#corpus)
-- [Tests et CI](#tests-et-ci)
-- [Surcoût mesuré](#surcoût-mesuré)
-- [Kubernetes (kind) et plugin K9s](#kubernetes-kind-et-plugin-k9s)
-- [Garanties fail-safe](#garanties-fail-safe)
-- [Limites connues](#limites-connues)
+- [Tests and CI](#tests-and-ci)
+- [Measured overhead](#measured-overhead)
+- [Kubernetes (kind) and K9s plugin](#kubernetes-kind-and-k9s-plugin)
+- [Fail-safe guarantees](#fail-safe-guarantees)
+- [Known limitations](#known-limitations)
 
-## État de la phase 1
+## Phase 1 status
 
-| Étape | Contenu | État |
+| Step | Content | Status |
 |---|---|---|
-| Agent — tagging | Tag `fq:` (endpoint + caller) sur JDBC, contexte de requête servlet | ✅ |
-| Agent — mesure + HTTP | Comptage et temps par requête HTTP, N+1, `/metrics`, `/fq/top`, `/fq/nplusone` | ✅ |
-| Demo-app + pièges | Spring Boot 3.5, Hibernate 6.6, 7 pièges + 1 témoin ([TRAPS.md](demo-app/TRAPS.md)) | ✅ |
-| Corpus S et M | Générateur déterministe, `COPY` en flux, extrait Open Library | ✅ |
-| Tests d'intégration | Testcontainers + vrai jar de l'agent, CI GitHub Actions | ✅ |
-| Surcoût | Latence p50/p99 avec et sans agent | ✅ (local) |
-| Déploiement kind + Kustomize | Overlays `dev` / `e2e`, initContainer d'injection | ⏳ à venir |
-| Plugin K9s | `/fq/top` et `/fq/nplusone` depuis K9s | ⏳ à venir |
-| E2E kind + CI e2e | `make e2e`, namespace éphémère `fq-e2e` | ⏳ à venir |
+| Agent — tagging | `fq:` tag (endpoint + caller) on JDBC, servlet request context | ✅ |
+| Agent — measurement + HTTP | Per-HTTP-request counts and timings, N+1, `/metrics`, `/fq/top`, `/fq/nplusone` | ✅ |
+| Demo app + traps | Spring Boot 3.5, Hibernate 6.6, 7 traps + 1 witness ([TRAPS.md](demo-app/TRAPS.md)) | ✅ |
+| Corpus S and M | Deterministic generator, streamed `COPY`, Open Library extract | ✅ |
+| Integration tests | Testcontainers + the real agent jar, GitHub Actions CI | ✅ |
+| Overhead | p50/p99 latency with and without the agent | ✅ (local) |
+| kind + Kustomize deployment | `dev` / `e2e` overlays, injection through an initContainer | ⏳ upcoming |
+| K9s plugin | `/fq/top` and `/fq/nplusone` from K9s | ⏳ upcoming |
+| kind E2E + E2E CI | `make e2e`, ephemeral `fq-e2e` namespace | ⏳ upcoming |
 
-## Contenu du dépôt
+## Repository layout
 
 ```
 flairquery/
-├── agent/          flairquery-agent : agent Java 21 (ByteBuddy relocalisé, jar shadé sans dépendance)
-├── demo-app/       flairquery-demo-app : appli Spring Boot cible, pièges documentés dans TRAPS.md
-├── it/             flairquery-it : tests d'intégration (Testcontainers + agent réel)
-├── corpus/         générateur de données (Python stdlib), chargement COPY, extrait Open Library
-├── deploy/         Postgres instrumenté (config + init), environnement local Docker Compose
-├── scripts/        trafic (traffic.sh), mesure du surcoût (bench.sh)
-├── docs/ROADMAP.md phases 2 à 7 (guide de conception)
-└── Makefile        point d'entrée (make help)
+├── agent/          flairquery-agent: Java 21 agent (relocated ByteBuddy, dependency-free shaded jar)
+├── demo-app/       flairquery-demo-app: target Spring Boot app, traps documented in TRAPS.md
+├── it/             flairquery-it: integration tests (Testcontainers + real agent)
+├── corpus/         data generator (Python stdlib), COPY loading, Open Library extract
+├── deploy/         instrumented PostgreSQL (config + init), local Docker Compose environment
+├── scripts/        traffic (traffic.sh), overhead measurement (bench.sh)
+├── docs/ROADMAP.md phases 2 to 7 (design guide)
+└── Makefile        entry point (make help)
 ```
 
-Maven multi-module (`./mvnw`, rien à installer) : `groupId io.github.anthonydeseille.flairquery`.
-La demo-app **n'hérite pas** du parent FlairQuery et ne dépend pas de l'agent.
+Maven multi-module build (`./mvnw`, nothing to install), `groupId io.github.anthonydeseille.flairquery`.
+The demo app does **not** inherit from the FlairQuery parent and does not depend on the agent.
 
-## Démarrage rapide (local, sans Kubernetes)
+## Quick start (local, no Kubernetes)
 
-Prérequis : JDK 21+, Docker (Docker Desktop, colima…), Python 3, `psql`, `jq`.
+Requirements: JDK 21+, Docker (Docker Desktop, colima…), Python 3, `psql`, `jq`.
 
 ```bash
-# terminal 1 : Postgres 16 instrumenté (Docker) + demo-app avec l'agent, au premier plan
+# terminal 1: instrumented PostgreSQL 16 (Docker) + demo app with the agent, in the foreground
 make demo-local
 
 # terminal 2
-make seed-local PROFILE=S          # ~99k lignes, ~15 s (PROFILE=M : 3,65 M lignes, 1,25 Go, 5-8 min)
-make traffic-local                 # appelle tous les endpoints de la demo
+make seed-local PROFILE=S          # ~99k rows, ~15 s (PROFILE=M: 3.65M rows, 1.25 GB, 5-8 min)
+make traffic-local                 # calls every demo endpoint
 curl -s localhost:9464/fq/nplusone | jq
 curl -s 'localhost:9464/fq/top?limit=5' | jq
 curl -s localhost:9464/metrics | grep '^fq_'
 ```
 
-Les tags sont visibles côté base :
+The tags are visible on the database side:
 
 ```bash
 docker exec flairquery-local-postgres-1 psql -U flairquery -d flairquery \
   -c "select calls, left(query, 160) from pg_stat_statements where query like '/* fq:%' order by total_exec_time desc limit 5"
 ```
 
-`make demo-local-clean` arrête Postgres **et supprime son volume**. `make help` liste toutes les cibles.
+`make demo-local-clean` stops PostgreSQL **and deletes its volume**. `make help` lists every target.
 
-## Installer l'agent sur une application
+## Installing the agent on an application
 
-L'agent est un unique jar, sans dépendance transitive (ByteBuddy est relocalisé sous
-`io.github.anthonydeseille.flairquery.shaded`) :
+The agent is a single jar with no transitive dependency (ByteBuddy is relocated under
+`io.github.anthonydeseille.flairquery.shaded`):
 
 ```bash
 ./mvnw -B -q -pl agent package -DskipTests      # → agent/target/flairquery-agent.jar
 
-FQ_APP_NAME=mon-appli FQ_BASE_PACKAGES=com.monentreprise \
-  java -javaagent:/chemin/flairquery-agent.jar -jar mon-appli.jar
+FQ_APP_NAME=my-app FQ_BASE_PACKAGES=com.mycompany \
+  java -javaagent:/path/flairquery-agent.jar -jar my-app.jar
 ```
 
-Sans modifier la ligne de commande (conteneurs) :
+Without changing the command line (containers):
 
 ```bash
 export JAVA_TOOL_OPTIONS="-javaagent:/fq/agent.jar"
 ```
 
-Sur Kubernetes, un initContainer copiera le jar dans un `emptyDir` monté en `/fq` (étape à venir) ;
-en phase 7, un webhook d'admission fera l'injection.
+On Kubernetes, an initContainer will copy the jar into an `emptyDir` mounted at `/fq` (upcoming step).
+In phase 7, an admission webhook will do the injection.
 
-Points instrumentés :
+Instrumentation points:
 
-| Point | Rôle |
+| Point | Purpose |
 |---|---|
-| `jakarta.servlet.http.HttpServlet#service(HttpServletRequest, HttpServletResponse)` et surcharges | ouvre / ferme le contexte de requête (ThreadLocal + compteur de profondeur, nettoyé même sur exception) |
-| `java.sql.Connection#prepareStatement(String, …)` (toutes implémentations, driver et pool) | ajoute le tag, mémorise le SQL du statement (map faible) |
-| `java.sql.Statement#execute / executeQuery / executeUpdate / executeLargeUpdate(String, …)` | tag + mesure |
-| `execute*()` / `executeBatch()` sans argument (prepared statements) | mesure |
+| `jakarta.servlet.http.HttpServlet#service(HttpServletRequest, HttpServletResponse)` and overrides | opens / closes the request context (ThreadLocal + depth counter, cleaned even on exceptions) |
+| `java.sql.Connection#prepareStatement(String, …)` (every implementation, driver and pool) | adds the tag, remembers the statement's SQL (weak map) |
+| `java.sql.Statement#execute / executeQuery / executeUpdate / executeLargeUpdate(String, …)` | tag + measurement |
+| no-argument `execute*()` / `executeBatch()` (prepared statements) | measurement |
 | `Statement#addBatch(String)` | tag |
 
-Compatibilité vérifiée : HikariCP 6 (proxy **et** driver instrumentés, tag et comptage uniques),
-pgjdbc 42.7, H2 2.3, Hibernate 6.6, Spring Boot 3.5 (fat jar), Java 21 et 25.
+Verified compatibility: HikariCP 6 (both proxy **and** driver instrumented, tagged and counted once),
+pgjdbc 42.7, H2 2.3, Hibernate 6.6, Spring Boot 3.5 (fat jar), Java 21 and 25.
 
 ## Configuration
 
-| Variable | Défaut | Rôle |
+| Variable | Default | Purpose |
 |---|---|---|
-| `FQ_ENABLED` | `true` | `false` : l'agent ne s'installe pas du tout (aucune transformation, aucun port) |
-| `FQ_APP_NAME` | `unknown-app` | nom de l'application dans le tag et les métriques |
-| `FQ_BASE_PACKAGES` | *(vide)* | packages applicatifs pour le `caller` (séparés par `,`). Vide : première frame hors frameworks connus |
-| `FQ_NPLUSONE_THRESHOLD` | `5` | N+1 si un même SQL normalisé est exécuté **plus de** N fois dans une requête HTTP |
-| `FQ_SAMPLING_RATE` | `1.0` | fraction des requêtes HTTP taguées et mesurées (décision par requête) |
-| `FQ_HTTP_PORT` | `9464` | port du serveur HTTP de l'agent (`0` = port libre) |
-| `FQ_LOG_LEVEL` | `INFO` | `DEBUG` liste les classes instrumentées et chaque requête HTTP |
+| `FQ_ENABLED` | `true` | `false`: the agent does not install anything (no transformation, no port) |
+| `FQ_APP_NAME` | `unknown-app` | application name in the tag and the metrics |
+| `FQ_BASE_PACKAGES` | *(empty)* | application packages used to find the `caller` (comma-separated). Empty: first frame outside well-known frameworks |
+| `FQ_NPLUSONE_THRESHOLD` | `5` | N+1 when the same normalized SQL runs **more than** N times in one HTTP request |
+| `FQ_SAMPLING_RATE` | `1.0` | fraction of HTTP requests tagged and measured (decided per request) |
+| `FQ_HTTP_PORT` | `9464` | port of the agent's HTTP server (`0` = any free port) |
+| `FQ_LOG_LEVEL` | `INFO` | `DEBUG` lists instrumented classes and every HTTP request |
 
-Une valeur invalide est journalisée et remplacée par sa valeur par défaut : la configuration
-n'empêche jamais le démarrage.
+An invalid value is logged and replaced by its default: configuration never prevents startup.
 
-## Le tag SQL
+## The SQL tag
 
 ```
-/* fq:app=<FQ_APP_NAME>,endpoint=<METHODE pattern>,caller=<classe#méthode:ligne> */ <SQL d'origine>
+/* fq:app=<FQ_APP_NAME>,endpoint=<METHOD pattern>,caller=<class#method:line> */ <original SQL>
 ```
 
-- **endpoint** : attribut Spring `HandlerMapping.bestMatchingPattern` lu par réflexion (aucune
-  dépendance Spring), par exemple `GET /authors/{id}`. Avant le mapping (filtres) ou hors Spring MVC :
-  l'URI brute. Hors requête HTTP (démarrage, Liquibase, schedulers) : `none`.
-- **caller** : première frame de `FQ_BASE_PACKAGES` trouvée par `StackWalker`, en ignorant les proxies
-  Spring CGLIB, Hibernate, ByteBuddy, JDK et les lambdas. Le résultat est mis en cache par frame.
-- **Échappement** : chaque valeur passe une liste blanche ASCII. Sont exclus notamment `*` (les
-  commentaires PostgreSQL s'imbriquent : un `/*` dans une valeur avalerait la requête), les guillemets,
-  `\`, `?`, `;`, `,`, `=` et les caractères de contrôle. Chaque valeur est tronquée à 200 caractères.
-- **Idempotent** : un SQL qui commence déjà par `/* fq:` n'est pas re-tagué.
-- **Aucune autre modification** : le SQL d'origine suit le commentaire, inchangé (testé).
-- `prepareCall` n'est **pas** tagué : la syntaxe d'échappement JDBC `{call …}` doit rester en tête.
+- **endpoint**: Spring's `HandlerMapping.bestMatchingPattern` attribute, read by reflection (no Spring
+  dependency), e.g. `GET /authors/{id}`. Before handler mapping (filters) or outside Spring MVC: the raw
+  URI. Outside any HTTP request (startup, Liquibase, schedulers): `none`.
+- **caller**: first frame in `FQ_BASE_PACKAGES` found with `StackWalker`, skipping Spring CGLIB,
+  Hibernate, ByteBuddy and JDK proxies and lambdas. The result is cached per frame.
+- **Escaping**: every value goes through an ASCII allow-list. Excluded characters include `*`
+  (PostgreSQL block comments nest, so a `/*` inside a value would swallow the query), quotes, `\`, `?`,
+  `;`, `,`, `=` and control characters. Each value is truncated to 200 characters.
+- **Idempotent**: SQL that already starts with `/* fq:` is not tagged again.
+- **No other change**: the original SQL follows the comment, untouched (tested).
+- `prepareCall` is **not** tagged: the JDBC escape syntax `{call …}` must stay first.
 
-Le format et le parsing sont dans une seule classe (`SqlTag`), prête à être réutilisée par le collector
-de la phase 2.
+Formatting and parsing live in a single class (`SqlTag`), ready to be reused by the phase 2 collector.
 
-## Endpoints HTTP et exemples de sortie
+## HTTP endpoints and sample output
 
-Serveur HTTP du JDK, en lecture seule (`GET` uniquement), sur un thread daemon.
+JDK HTTP server, read-only (`GET` only), on a daemon thread.
 
-| Chemin | Contenu |
+| Path | Content |
 |---|---|
-| `/metrics` | format Prometheus texte 0.0.4 |
-| `/fq/top?limit=N` | top des SQL par temps total (endpoint, caller, appels, temps) |
-| `/fq/nplusone` | N+1 détectés |
-| `/fq/endpoints` | synthèse par endpoint (requêtes HTTP, requêtes SQL, temps) |
+| `/metrics` | Prometheus text format 0.0.4 |
+| `/fq/top?limit=N` | top SQL statements by total time (endpoint, caller, calls, timings) |
+| `/fq/nplusone` | detected N+1 patterns |
+| `/fq/endpoints` | per-endpoint summary (HTTP requests, SQL statements, timings) |
 | `/fq/health` | `{"status":"UP"}` |
 
-Les réponses JSON portent `schemaVersion` (actuellement `1`). Toutes les structures en mémoire sont
-bornées (500 endpoints, 5 000 SQL, 1 000 N+1) ; au-delà, les nouvelles clés sont ignorées et comptées
-dans `fq_dropped`.
+JSON responses carry `schemaVersion` (currently `1`). Every in-memory structure is bounded (500 endpoints,
+5,000 SQL statements, 1,000 N+1 entries); beyond that, new keys are ignored and counted in `fq_dropped`.
 
-Sorties réelles (demo-app, profil M, `make traffic-local` × 2) :
+Real output (demo app, profile M, `make traffic-local` × 2):
 
 **`/fq/nplusone`**
 
@@ -204,8 +205,8 @@ Sorties réelles (demo-app, profil M, `make traffic-local` × 2) :
 }
 ```
 
-Le caller pointe sur le **contrôleur** : le N+1 se produit dans la couche web, hors transaction, ce que
-seul `open-in-view` rend possible (pièges 1 et 6).
+The caller points at the **controller**: the N+1 happens in the web layer, outside any transaction, which
+only works because of `open-in-view` (traps 1 and 6).
 
 **`/fq/top?limit=2`**
 
@@ -239,9 +240,9 @@ seul `open-in-view` rend possible (pièges 1 et 6).
 }
 ```
 
-Sur le profil M, le tri sur disque du piège 7 coûte 25 s par appel (`work_mem=64kB`, 3 M de lignes).
+On profile M, the on-disk sort of trap 7 costs 25 s per call (`work_mem=64kB`, 3M rows).
 
-**`/metrics`** (extrait)
+**`/metrics`** (excerpt)
 
 ```
 fq_queries_count{app="demo-app",endpoint="GET /authors"} 44
@@ -254,152 +255,150 @@ fq_agent_errors{app="demo-app"} 0
 fq_agent_active{app="demo-app"} 1
 ```
 
-| Métrique | Type | Sens |
+| Metric | Type | Meaning |
 |---|---|---|
-| `fq_queries_count` | counter | requêtes SQL exécutées, par endpoint |
-| `fq_queries_time_seconds` | counter | temps SQL cumulé (appels JDBC `execute*`) |
-| `fq_nplusone` | counter | requêtes HTTP dans lesquelles un N+1 a été détecté |
-| `fq_http_requests_count` / `fq_http_time_seconds` | counter | requêtes HTTP observées (échantillonnées) |
-| `fq_agent_errors` | counter | erreurs internes de l'agent (jamais propagées) |
-| `fq_agent_active` | gauge | `0` après ouverture du disjoncteur |
-| `fq_dropped` | counter | entrées ignorées car une borne mémoire est atteinte |
+| `fq_queries_count` | counter | SQL statements executed, per endpoint |
+| `fq_queries_time_seconds` | counter | cumulative SQL time (JDBC `execute*` calls) |
+| `fq_nplusone` | counter | HTTP requests in which an N+1 was detected |
+| `fq_http_requests_count` / `fq_http_time_seconds` | counter | observed (sampled) HTTP requests |
+| `fq_agent_errors` | counter | internal agent errors (never propagated) |
+| `fq_agent_active` | gauge | `0` once the circuit breaker has opened |
+| `fq_dropped` | counter | entries ignored because an in-memory bound was reached |
 
-**Logs** : JSON sur une ligne, sur stdout ; chaque N+1 est journalisé une seule fois par
-(endpoint, SQL) :
+**Logs**: one-line JSON on stdout; each N+1 is logged once per (endpoint, SQL):
 
 ```json
 {"ts":"2026-11-23T07:47:02.207691Z","level":"WARN","logger":"flairquery-agent","msg":"N+1 detected","endpoint":"GET /authors","sql":"select b1_0.author_id,... where b1_0.author_id=?","caller":"io.github.anthonydeseille.flairquery.demo.web.AuthorController#toDto:47","queriesInRequest":20,"threshold":5}
 ```
 
-**Côté PostgreSQL** (`pg_stat_statements.query`) :
+**PostgreSQL side** (`pg_stat_statements.query`):
 
 ```
 /* fq:app=demo-app,endpoint=GET /authors,caller=io.github.anthonydeseille.flairquery.demo.service.AuthorService#firstAuthors:23 */ select count(a1_0.id) from author a1_0
 ```
 
-## Demo-app et pièges
+## Demo app and traps
 
-Spring Boot 3.5.16, Hibernate 6.6, PostgreSQL 16, schéma géré par Liquibase (données jamais chargées par
-Liquibase). Entités `Author`, `Book`, `Publisher`, `Review`.
+Spring Boot 3.5.16, Hibernate 6.6, PostgreSQL 16, schema managed by Liquibase (data is never loaded by
+Liquibase). Entities `Author`, `Book`, `Publisher`, `Review`.
 
-| # | Piège | Endpoint |
+| # | Trap | Endpoint |
 |---|---|---|
-| 1 | N+1 auteurs → livres | `GET /authors?limit=20` |
-| 2 | `@ManyToOne` EAGER par défaut (`Book → Publisher`), jamais lu | `GET /books?limit=50` |
-| 3 | Sur-fetch : entités complètes pour 2 champs | `GET /books/titles?authorId=7` |
-| 4 | Filtre sur colonne non indexée | `GET /reviews/search?reviewer=Alice%20Martin%2000000` |
+| 1 | N+1 authors → books | `GET /authors?limit=20` |
+| 2 | `@ManyToOne` EAGER by default (`Book → Publisher`), never read | `GET /books?limit=50` |
+| 3 | Over-fetching: full entities loaded for 2 fields | `GET /books/titles?authorId=7` |
+| 4 | Filter on a non-indexed column | `GET /reviews/search?reviewer=Alice%20Martin%2000000` |
 | 5 | `JOIN FETCH` + pagination (HHH90003004) | `GET /authors/with-books?prefix=Al&size=5` |
-| 6 | `spring.jpa.open-in-view=true` par défaut | global |
-| 7 | Tri volumineux qui déborde sur disque | `GET /reviews/ranking?page=400&size=50` |
-| ✓ | Témoin propre | `GET /publishers/1` |
+| 6 | `spring.jpa.open-in-view=true` left at its default | global |
+| 7 | Large sort spilling to disk | `GET /reviews/ranking?page=400&size=50` |
+| ✓ | Clean witness | `GET /publishers/1` |
 
-[demo-app/TRAPS.md](demo-app/TRAPS.md) est la **vérité terrain** : signal attendu, détection en
-phase 1 et correction attendue pour chaque piège. Ce qui est vérifié de bout en bout : N+1 et EAGER
-détectés, seq scan, `external merge Disk` et `temp_blks_written`, warnings `HHH90003004` et
-`open-in-view`, témoin jamais signalé.
+[demo-app/TRAPS.md](demo-app/TRAPS.md) is the **ground truth**: expected signal, phase 1 detection and
+expected fix for each trap. Verified end to end: N+1 and EAGER detected, seq scan, `external merge Disk`
+and `temp_blks_written`, `HHH90003004` and `open-in-view` warnings, witness never flagged.
 
 ## Corpus
 
-Données chargées **uniquement par `COPY`**, générées en flux (aucun CSV sur disque), déterministes
-(seed fixe). Détails, volumes et extrait Open Library : [corpus/README.md](corpus/README.md).
+Data is loaded **only through `COPY`**, generated as a stream (no CSV on disk), deterministic (fixed
+seed). Details, volumes and the Open Library extract: [corpus/README.md](corpus/README.md).
 
-| Profil | Usage | Lignes | Disque | Chargement local |
+| Profile | Usage | Rows | Disk | Local load time |
 |---|---|---|---|---|
-| S | Testcontainers, CI | ~99 k | 41 Mo | ~15 s |
-| M | fq-dev, e2e kind | ~3,65 M (+ extrait Open Library) | 1,25 Go | 5 à 8 min |
-| L | hors phase 1 | dizaines de millions | — | point d'extension |
+| S | Testcontainers, CI | ~99k | 41 MB | ~15 s |
+| M | fq-dev, kind e2e | ~3.65M (+ Open Library extract) | 1.25 GB | 5 to 8 min |
+| L | out of phase 1 | tens of millions | — | extension point |
 
-## Tests et CI
+## Tests and CI
 
 ```bash
-make test      # unitaires : agent (52) + corpus (6)
-make verify    # + demo-app (Testcontainers) + intégration it/ (11), ~2 min, Docker requis
+make test      # unit tests: agent (52) + corpus (6)
+make verify    # + demo app (Testcontainers) + it/ integration (11), ~2 min, Docker required
 ```
 
-| Niveau | Ce qui est vérifié |
+| Level | What is verified |
 |---|---|
-| Unitaires agent | format du tag, échappement face à des valeurs hostiles, résolution du caller (proxies CGLIB/JDK, lambdas), config, normalisation SQL, N+1, Prometheus, serveur HTTP (threads daemon, port occupé), fail-safe, instrumentation réelle sur H2 et HikariCP |
-| Unitaires corpus | déterminisme, volumes, distribution déséquilibrée, clés étrangères, mapping Open Library |
-| Intégration (`it/`) | Postgres 16 + corpus S + demo-app dans une JVM séparée avec le **vrai** jar : tag dans `pg_stat_statements`, N+1 détecté et témoin non, une seule requête comptée via Hikari, `FQ_ENABLED=false`, fautes injectées sans effet sur les réponses (comparées octet pour octet à un run sans agent), arrêt de la JVM si l'appli échoue au démarrage, jar shadé sans classe étrangère |
-| CI | GitHub Actions, Java 21 : unitaires + corpus + intégration à chaque push |
+| Agent unit tests | tag format, escaping of hostile values, caller resolution (CGLIB/JDK proxies, lambdas), configuration, SQL normalization, N+1, Prometheus output, HTTP server (daemon threads, busy port), fail-safe, real instrumentation on H2 and HikariCP |
+| Corpus unit tests | determinism, volumes, skewed distribution, foreign keys, Open Library mapping |
+| Integration (`it/`) | PostgreSQL 16 + corpus S + demo app in a separate JVM with the **real** jar: tag in `pg_stat_statements`, N+1 detected and witness not, one query counted through Hikari, `FQ_ENABLED=false`, injected faults without any effect on responses (compared byte for byte with a run without the agent), JVM exits when the app fails to start, shaded jar contains no foreign class |
+| CI | GitHub Actions, Java 21: unit + corpus + integration tests on every push |
 
-**Docker non standard (colima…)** : le Makefile récupère le socket du contexte Docker actif. Pour lancer
-`./mvnw verify` directement :
+**Non-default Docker (colima…)**: the Makefile picks the socket of the active Docker context. To run
+`./mvnw verify` directly:
 
 ```bash
 export DOCKER_HOST=$(docker context inspect --format '{{.Endpoints.docker.Host}}')
-export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock   # colima uniquement
+export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock   # colima only
 ```
 
-## Surcoût mesuré
+## Measured overhead
 
-`scripts/bench.sh` lance la même demo-app sur la même base, sans puis avec l'agent. Il mesure la latence
-d'un client séquentiel (`curl`), après 200 requêtes de chauffe par endpoint.
+`scripts/bench.sh` runs the same demo app against the same database, without then with the agent. It
+measures single-client sequential latency (`curl`) after 200 warm-up requests per endpoint.
 
-Mesures du 2026-11-23 : Mac Intel i7-9750H, JDK 25, PostgreSQL 16 dans colima, profil M, agent avec
-`FQ_SAMPLING_RATE=1.0` :
+Measured on 2026-11-23: Intel i7-9750H Mac, JDK 25, PostgreSQL 16 in colima, profile M, agent with
+`FQ_SAMPLING_RATE=1.0`:
 
-| Endpoint | Requêtes SQL / appel | Requêtes | p50 sans | p50 avec | Δ p50 | p99 sans | p99 avec | Δ p99 |
+| Endpoint | SQL statements / call | Requests | p50 without | p50 with | Δ p50 | p99 without | p99 with | Δ p99 |
 |---|---|---|---|---|---|---|---|---|
-| `/publishers/1` | 1 | 2000 | 5,88 ms | 6,13 ms | **+0,25 ms** | 8,87 ms | 9,46 ms | +0,59 ms |
-| `/books?limit=50` | ~45 | 500 | 79,61 ms | 82,97 ms | **+3,36 ms** | 108,41 ms | 114,01 ms | +5,60 ms |
-| `/authors?limit=20` | 22 | 200 | 129,32 ms | 132,37 ms | **+3,04 ms** | 182,45 ms | 186,62 ms | +4,17 ms |
+| `/publishers/1` | 1 | 2000 | 5.88 ms | 6.13 ms | **+0.25 ms** | 8.87 ms | 9.46 ms | +0.59 ms |
+| `/books?limit=50` | ~45 | 500 | 79.61 ms | 82.97 ms | **+3.36 ms** | 108.41 ms | 114.01 ms | +5.60 ms |
+| `/authors?limit=20` | 22 | 200 | 129.32 ms | 132.37 ms | **+3.04 ms** | 182.45 ms | 186.62 ms | +4.17 ms |
 
-Lecture : environ **70 µs par requête SQL** (résolution du caller par `StackWalker`, tag, mesure) et
-**~0,25 ms** sur un endpoint à une requête, soit 3 à 4 %. Le coût est proportionnel au nombre de requêtes :
-il est le plus élevé précisément sur les endpoints en N+1. Pour le réduire en production, utiliser
-`FQ_SAMPLING_RATE`. Ces mesures sont indicatives (un seul client, machine de développement) ; la mesure
-sous charge sur kind viendra avec l'e2e.
+How to read it: about **70 µs per SQL statement** (caller resolution with `StackWalker`, tagging,
+measurement) and **~0.25 ms** on a single-query endpoint, i.e. 3 to 4 %. The cost grows with the number of
+statements, so it is highest precisely on N+1 endpoints. Use `FQ_SAMPLING_RATE` to reduce it in
+production. These figures are indicative (single client, development machine); a measurement under load
+on kind will come with the e2e step.
 
-## Kubernetes (kind) et plugin K9s
+## Kubernetes (kind) and K9s plugin
 
-⏳ **À venir** (prochaines étapes de la phase 1) :
+⏳ **Upcoming** (next phase 1 steps):
 
-- `make cluster build deploy seed load` sur **kind**. Postgres 16 avec `pg_stat_statements` et
-  `auto_explain`, demo-app avec l'agent injecté par un initContainer (`emptyDir` + `JAVA_TOOL_OPTIONS`),
-  annotations Prometheus. Requests/limits volontairement mal dimensionnés, et un overlay où pool Hikari ×
-  replicas > `max_connections`. Overlays Kustomize `dev` (`fq-dev`, persistant) et `e2e` (`fq-e2e`, éphémère).
-- `make e2e` : déploiement, corpus, trafic, assertions, suppression garantie du namespace.
-- `k9s/plugins.yaml` : `Shift-T` pour `/fq/top`, `Shift-N` pour `/fq/nplusone` sur le pod sélectionné.
+- `make cluster build deploy seed load` on **kind**. PostgreSQL 16 with `pg_stat_statements` and
+  `auto_explain`, demo app with the agent injected by an initContainer (`emptyDir` + `JAVA_TOOL_OPTIONS`),
+  Prometheus annotations. CPU/memory requests and limits deliberately mis-sized, plus an overlay where
+  Hikari pool × replicas > `max_connections`. Kustomize overlays `dev` (`fq-dev`, persistent) and `e2e`
+  (`fq-e2e`, ephemeral).
+- `make e2e`: deployment, corpus, traffic, assertions, guaranteed namespace deletion.
+- `k9s/plugins.yaml`: `Shift-T` for `/fq/top`, `Shift-N` for `/fq/nplusone` on the selected pod.
 
-Prérequis : `brew install kind kubectl`.
+Requirements: `brew install kind kubectl`.
 
-## Garanties fail-safe
+## Fail-safe guarantees
 
-| Situation | Comportement | Vérifié par |
+| Situation | Behaviour | Verified by |
 |---|---|---|
-| Exception (même `Error`) dans l'agent | jamais propagée ; le SQL d'origine est envoyé | unitaires + intégration |
-| Plus de 100 erreurs internes | disjoncteur : l'agent passe en no-op (`fq_agent_active 0`) | unitaires + intégration |
-| Échec d'initialisation | l'application démarre normalement, sans instrumentation | intégration |
-| `FQ_ENABLED=false` | aucune transformation, aucun port ouvert | unitaires + intégration |
-| Port HTTP occupé, JRE sans `jdk.httpserver` | endpoints indisponibles, application inchangée | unitaires |
-| Application qui échoue au démarrage | la JVM s'arrête (tous les threads de l'agent sont daemon) | intégration |
-| Mémoire | structures bornées ; statements référencés faiblement | unitaires |
-| Conflit de dépendances | jar shadé, seules des classes `io/github/anthonydeseille/flairquery/**` | intégration |
+| Exception (even an `Error`) inside the agent | never propagated; the original SQL is sent | unit + integration |
+| More than 100 internal errors | circuit breaker: the agent becomes a no-op (`fq_agent_active 0`) | unit + integration |
+| Initialization failure | the application starts normally, without instrumentation | integration |
+| `FQ_ENABLED=false` | no transformation, no open port | unit + integration |
+| HTTP port in use, JRE without `jdk.httpserver` | endpoints unavailable, application unchanged | unit |
+| Application failing at startup | the JVM exits (every agent thread is a daemon) | integration |
+| Memory | bounded structures; statements weakly referenced | unit |
+| Dependency conflicts | shaded jar, only `io/github/anthonydeseille/flairquery/**` classes | integration |
 
-## Limites connues
+## Known limitations
 
-1. **`pg_stat_statements` ne garde qu'un texte par `queryid`**, celui de la première occurrence : un seul
-   tag, donc un seul endpoint et un seul caller par requête normalisée côté base. Exemple mesuré : le
-   chargement des éditeurs vient de 3 endpoints, mais il est attribué en totalité au premier tag vu. La
-   répartition exacte vient de l'agent (`/fq/top`, `/fq/nplusone`).
-2. **Contexte en ThreadLocal** : requêtes asynchrones (`@Async`, `CompletableFuture`, servlet async,
-   WebFlux) non attribuées (`endpoint=none`). Les servlets `javax.*` (Spring Boot 2) ne sont pas
-   instrumentés.
-3. **Requêtes exécutées avant le mapping Spring** (filtres) : l'endpoint est l'URI brute.
-4. **`*` interdit dans le tag** : `/actuator/health/**` apparaît comme `/actuator/health/__`.
-5. **`prepareCall` non tagué** (syntaxe `{call …}`).
-6. **Batch JDBC** : un `executeBatch` compte pour une exécution, quel que soit le nombre de lignes.
-7. **Prepared statements côté serveur (pgjdbc)** : chaque combinaison de tag forme une chaîne SQL
-   distincte, ce qui fragmente le cache de statements du driver (`preparedStatementCacheQueries`).
-8. **Normalisation SQL** proche de celle de `pg_stat_statements` mais pas identique (texte, pas arbre
-   syntaxique) ; la phase 2 corrélera par le tag, pas par le texte.
-9. **JDK 24+** : ByteBuddy déclenche un avertissement `sun.misc.Unsafe` sur stderr, sans effet. Les entrées
-   multi-release de ByteBuddy sont exclues du jar : relocalisées, elles masquaient le ByteBuddy d'Hibernate.
-10. **`auto_explain` en dev** (`log_min_duration=0`) produit des logs très volumineux. Un chargement M a
-    écrit 14 Go de logs serveur avant correction : le seed désactive `auto_explain` pour sa session, et le
-    conteneur local plafonne ses logs.
+1. **`pg_stat_statements` keeps one text per `queryid`**, the first one seen: one tag, hence one endpoint
+   and one caller per normalized statement on the database side. Measured example: the publisher lookup
+   comes from 3 endpoints but is entirely attributed to the first tag seen. The exact breakdown comes from
+   the agent (`/fq/top`, `/fq/nplusone`).
+2. **ThreadLocal context**: asynchronous work (`@Async`, `CompletableFuture`, async servlets, WebFlux) is
+   not attributed (`endpoint=none`). `javax.*` servlets (Spring Boot 2) are not instrumented.
+3. **Statements executed before Spring handler mapping** (filters): the endpoint is the raw URI.
+4. **`*` is not allowed in the tag**: `/actuator/health/**` shows up as `/actuator/health/__`.
+5. **`prepareCall` is not tagged** (`{call …}` syntax).
+6. **JDBC batches**: one `executeBatch` counts as one execution, whatever the number of rows.
+7. **Server-side prepared statements (pgjdbc)**: each tag combination is a distinct SQL string, which
+   fragments the driver's statement cache (`preparedStatementCacheQueries`).
+8. **SQL normalization** is close to `pg_stat_statements` but not identical (text-based, not parse-tree
+   based); phase 2 correlates through the tag, not through the text.
+9. **JDK 24+**: ByteBuddy triggers a harmless `sun.misc.Unsafe` warning on stderr. ByteBuddy's
+   multi-release entries are excluded from the jar: once relocated, they shadowed Hibernate's own ByteBuddy.
+10. **`auto_explain` in dev** (`log_min_duration=0`) produces very large logs. Before the fix, one profile M
+    load wrote 14 GB of server logs: seeding now disables `auto_explain` for its session, and the local
+    container caps its logs.
 
-## Licence des données
+## Data license
 
-L'extrait Open Library est sous licence CC0. Les autres données sont générées.
+The Open Library extract is CC0. All other data is generated.
