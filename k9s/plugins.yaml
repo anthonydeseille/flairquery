@@ -1,5 +1,6 @@
-# FlairQuery K9s plugins (pods scope). Install with `make k9s-plugin` (replaces __FQ_VIEW__ with the
-# absolute path of k9s/fq-view.sh) or copy this block into your existing plugins.yaml.
+# FlairQuery K9s plugins (pods scope). Install with `make k9s-plugin`, which writes the absolute path
+# of k9s/fq-view.sh into each command, or copy these entries into your existing plugins.yaml and set
+# that path yourself.
 #   Shift-Q : top SQL statements of the selected pod (/fq/top)
 #   Shift-W : N+1 warnings of the selected pod (/fq/nplusone)
 #   Shift-E : per-endpoint summary (/fq/endpoints)
