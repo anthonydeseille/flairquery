@@ -173,13 +173,13 @@ deploy: ## Deploy OVERLAY=dev|e2e|pool-overflow and wait until ready
 seed: ## Load corpus PROFILE=S|M with a Job (FORCE=1 to reload)
 	-$(KUBECTL) -n $(NS) delete job fq-seed --ignore-not-found --wait=true
 	sed -e 's/__PROFILE__/$(PROFILE)/' -e 's/__FORCE__/$(if $(FORCE),--force,none)/' deploy/k8s/jobs/seed.yaml | $(KUBECTL) -n $(NS) apply -f -
-	$(KUBECTL) -n $(NS) wait --for=condition=complete job/fq-seed --timeout=40m || { $(KUBECTL) -n $(NS) logs job/fq-seed --tail=30; exit 1; }
+	KUBECTL="$(KUBECTL)" scripts/wait-job.sh $(NS) fq-seed 2400
 	$(KUBECTL) -n $(NS) logs job/fq-seed --tail=8
 
 load: ## Generate traffic on every demo endpoint with a Job (ROUNDS=5)
 	-$(KUBECTL) -n $(NS) delete job fq-load --ignore-not-found --wait=true
 	sed -e 's/__ROUNDS__/$(ROUNDS)/' deploy/k8s/jobs/load.yaml | $(KUBECTL) -n $(NS) apply -f -
-	$(KUBECTL) -n $(NS) wait --for=condition=complete job/fq-load --timeout=30m || { $(KUBECTL) -n $(NS) logs job/fq-load --tail=30; exit 1; }
+	KUBECTL="$(KUBECTL)" scripts/wait-job.sh $(NS) fq-load 1800
 	$(KUBECTL) -n $(NS) logs job/fq-load --tail=3
 
 status: ## Pods and resources of the namespace

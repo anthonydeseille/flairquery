@@ -35,6 +35,9 @@ cleanup() {
     $KUBECTL -n $NS logs deploy/demo-app -c demo-app --tail=40 2>/dev/null || true
     $KUBECTL -n $NS logs job/fq-seed --tail=20 2>/dev/null || true
     $KUBECTL -n $NS logs deploy/fq-collector --tail=30 2>/dev/null || true
+    $KUBECTL -n $NS logs job/fq-load --tail=20 2>/dev/null || true
+    $KUBECTL -n $NS get events --sort-by=.lastTimestamp 2>/dev/null | tail -25 || true
+    $KUBECTL -n $NS exec deploy/postgres -- sh -c 'df -h /var/lib/postgresql/data; du -sh /var/lib/postgresql/data/pgdata/log /var/lib/postgresql/data/pgdata/base/pgsql_tmp 2>/dev/null' 2>/dev/null || true
   fi
   if [ "${E2E_KEEP:-}" = "1" ]; then
     log "E2E_KEEP=1: namespace $NS kept"
