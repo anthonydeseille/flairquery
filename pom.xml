@@ -14,6 +14,7 @@
   <modules>
     <module>core</module>
     <module>agent</module>
+    <module>collector</module>
     <module>demo-app</module>
     <module>it</module>
   </modules>
@@ -30,6 +31,8 @@
     <h2.version>2.3.232</h2.version>
     <postgresql.version>42.7.11</postgresql.version>
     <testcontainers.version>1.21.4</testcontainers.version>
+    <jackson.version>2.23.0</jackson.version>
+    <liquibase.version>4.31.1</liquibase.version>
   </properties>
 
   <dependencyManagement>
@@ -75,6 +78,16 @@
         <groupId>org.postgresql</groupId>
         <artifactId>postgresql</artifactId>
         <version>${postgresql.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-databind</artifactId>
+        <version>${jackson.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.liquibase</groupId>
+        <artifactId>liquibase-core</artifactId>
+        <version>${liquibase.version}</version>
       </dependency>
       <dependency>
         <groupId>org.testcontainers</groupId>

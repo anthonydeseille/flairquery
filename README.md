@@ -60,6 +60,7 @@ operator: see [docs/ROADMAP.md](docs/ROADMAP.md).
 ```
 flairquery/
 ├── core/           flairquery-core: shared fq: tag format/parser and SQL normalizer (no dependency)
+├── collector/      flairquery-collector: phase 2 PostgreSQL collector (in progress)
 ├── agent/          flairquery-agent: Java 21 agent (relocated ByteBuddy, dependency-free shaded jar)
 ├── demo-app/       flairquery-demo-app: target Spring Boot app, traps documented in TRAPS.md
 ├── it/             flairquery-it: integration tests (Testcontainers + real agent)
@@ -352,6 +353,42 @@ measurement) and **~0.25 ms** on a single-query endpoint, i.e. 3 to 4 %. The cos
 statements, so it is highest precisely on N+1 endpoints. Use `FQ_SAMPLING_RATE` to reduce it in
 production. These figures are indicative (single client, development machine); a measurement under load
 on kind will come with the e2e step.
+
+## Collector (phase 2, in progress)
+
+`flairquery-collector` periodically reads the observed PostgreSQL with the read-only `fq_reader` role
+(`pg_stat_statements`, `pg_stat_statements_info`, `pg_stat_user_tables`), computes deltas between
+snapshots and stores them in **its own database** (`fq-store`), never in the observed one.
+
+- The first cycle is a baseline (no delta). A statement seen for the first time, an evicted and re-created
+  entry, or a global `pg_stat_statements_reset()` never produces negative or invented values.
+- The collector's own statements are excluded, its read transactions are read-only and always closed.
+- Endpoint and caller currently come from the `pg_stat_statements` text (first tag seen). The exact
+  per-execution mapping through `auto_explain` comes with the next step.
+
+```bash
+make demo-local              # terminal 1: PostgreSQL + fq-store (Compose) + demo app with the agent
+make collector-local         # terminal 2: collector on the host (INTERVAL=10 for a 10 s cycle)
+make traffic-local           # terminal 3, then:
+curl -s 'localhost:9465/fq/collector/queries?window=15m&order=time&limit=10' | jq
+curl -s 'localhost:9465/fq/collector/tables?window=15m' | jq
+curl -s 'localhost:9465/fq/collector/snapshots' | jq
+```
+
+`window` accepts `90s`, `15m`, `2h`, `1d`; `order` accepts `time`, `calls`, `mean`, `temp`, `reads`.
+If your local PostgreSQL volume predates phase 2, run `make db-restart-local` once (JSON log
+configuration) — `make collector-local` re-applies the `fq_reader` grants itself.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `FQ_COLLECTOR_TARGET_URL` | *(required)* | JDBC URL of the observed database |
+| `FQ_COLLECTOR_TARGET_USER` / `_PASSWORD` | `fq_reader` | read-only role |
+| `FQ_COLLECTOR_TARGET_NAME` | host:port | target label |
+| `FQ_COLLECTOR_STORE_URL` | *(required)* | JDBC URL of fq-store |
+| `FQ_COLLECTOR_STORE_USER` / `_PASSWORD` | `fqstore` | fq-store credentials |
+| `FQ_COLLECTOR_INTERVAL` | `30` | seconds between cycles |
+| `FQ_COLLECTOR_RETENTION_HOURS` | `72` | snapshots older than this are purged |
+| `FQ_COLLECTOR_HTTP_PORT` | `9465` | HTTP API and `/metrics` |
 
 ## Kubernetes (kind) and K9s plugin
 

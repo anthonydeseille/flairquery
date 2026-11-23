@@ -1,0 +1,4 @@
+# fq-store schema (the collector's own database). Applied by the collector at startup.
+databaseChangeLog:
+  - include:
+      file: db/store/001-snapshots.sql

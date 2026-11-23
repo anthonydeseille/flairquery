@@ -43,6 +43,18 @@ db-grants-local: ## (Re)apply the fq_reader role and grants on the local Compose
 openlibrary: ## Stream Open Library dumps and cache a small subset (~/.cache/flairquery/openlibrary)
 	python3 -I corpus/openlibrary/fetch.py $(OL_ARGS)
 
+.PHONY: db-restart-local collector-local
+db-restart-local: ## Restart the local PostgreSQL (applies a changed deploy/postgres/postgresql-fq.conf)
+	docker compose -f $(LOCAL_COMPOSE) restart postgres
+	docker compose -f $(LOCAL_COMPOSE) up -d --wait
+
+collector-local: jars ## Collector on the host against the local Compose databases (foreground, Ctrl-C to stop)
+	docker compose -f $(LOCAL_COMPOSE) up -d --wait
+	$(MAKE) --no-print-directory db-grants-local
+	FQ_COLLECTOR_TARGET_URL=jdbc:postgresql://localhost:5432/flairquery FQ_COLLECTOR_TARGET_NAME=local \
+	FQ_COLLECTOR_STORE_URL=jdbc:postgresql://localhost:5433/fqstore FQ_COLLECTOR_INTERVAL=$(or $(INTERVAL),30) \
+	  java -jar collector/target/flairquery-collector.jar
+
 .PHONY: demo-local seed-local traffic-local demo-local-clean
 demo-local: jars ## Postgres 16 in Docker + demo app with the agent (foreground, Ctrl-C to stop)
 	docker compose -f $(LOCAL_COMPOSE) up -d --wait
