@@ -119,6 +119,21 @@ public final class RequestStats {
         l.caller = caller;
     }
 
+    private final Map<String, java.util.BitSet> attributesRead = new LinkedHashMap<>();
+
+    /** Attribute {@code index} of the entity class {@code entity} was read in this request. */
+    public void attributeRead(String entity, int index) {
+        java.util.BitSet read = attributesRead.get(entity);
+        if (read == null) {
+            if (attributesRead.size() >= MAX_DISTINCT_ROLES) return;
+            attributesRead.put(entity, read = new java.util.BitSet());
+        }
+        read.set(index);
+    }
+
+    /** Persistent attributes read, per entity class. */
+    public Map<String, java.util.BitSet> attributesRead() { return attributesRead; }
+
     public void inMemoryPagination() { inMemoryPaginations++; }
 
     public void openInView(boolean active) { openInView = active; }

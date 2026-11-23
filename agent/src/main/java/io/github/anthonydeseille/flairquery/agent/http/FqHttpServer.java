@@ -61,6 +61,8 @@ public final class FqHttpServer {
                     "threshold", registry.nPlusOneThreshold(), "nplusone", registry.nPlusOne())));
             server.createContext("/fq/endpoints", ex -> json(ex, Map.of("endpoints", registry.endpoints())));
             server.createContext("/fq/profile", ex -> json(ex, Map.of("profiles", profiles.profiles())));
+            server.createContext("/fq/model", ex -> json(ex, Map.of("entities",
+                    io.github.anthonydeseille.flairquery.agent.model.EntityModels.describe())));
             server.createContext("/fq/health", ex -> json(ex, Map.of("status", "UP")));
             server.createContext("/", ex -> respond(ex, 404, "application/json", "{\"error\":\"not found\"}"));
             startAsDaemon(server);

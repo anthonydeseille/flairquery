@@ -104,6 +104,14 @@ public final class Fq {
         }
     }
 
+    public static void attributeRead(Object entity, String getter) {
+        try {
+            hooks.attributeRead(entity, getter);
+        } catch (Throwable t) {
+            onError("attributeRead", t);
+        }
+    }
+
     public static void rowRead(Object resultSet) {
         try {
             hooks.rowRead(resultSet);

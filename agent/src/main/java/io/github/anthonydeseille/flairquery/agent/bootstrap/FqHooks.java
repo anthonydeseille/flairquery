@@ -35,6 +35,9 @@ public interface FqHooks {
     /** {@code ResultSet#next()} returned true on {@code resultSet}. */
     default void rowRead(Object resultSet) { }
 
+    /** A getter of an {@code @Entity} class was called on {@code entity}. */
+    default void attributeRead(Object entity, String getter) { }
+
 
     /** Hibernate put an entity into the persistence context (loaded from a result set). */
     default void entityLoaded(Object entity) { }

@@ -1,6 +1,8 @@
 package io.github.anthonydeseille.flairquery.agent.profile;
 
 import io.github.anthonydeseille.flairquery.agent.metrics.RequestStats;
+import io.github.anthonydeseille.flairquery.agent.model.EntityModel;
+import io.github.anthonydeseille.flairquery.agent.model.EntityModels;
 import io.github.anthonydeseille.flairquery.agent.spi.FqListener;
 import io.github.anthonydeseille.flairquery.agent.spi.RequestSummary;
 
@@ -55,7 +57,9 @@ public final class ProfileRegistry implements FqListener {
         long maxRowsPerRequest;
         long inMemoryPaginationRequests;
         long openInViewRequests;
-        final Map<String, long[]> entities = new LinkedHashMap<>();   // total, max per request
+        final Map<String, long[]> entities = new LinkedHashMap<>();   // total, max per request, requests seen
+        /** Per entity class: number of requests in which each attribute was read. */
+        final Map<String, long[]> attributeReads = new LinkedHashMap<>();
         final Map<String, Lazy> lazy = new LinkedHashMap<>();
         final Map<String, Statement> statements = new LinkedHashMap<>();
 
@@ -83,14 +87,29 @@ public final class ProfileRegistry implements FqListener {
             }
             if (st.inMemoryPaginations() > 0) inMemoryPaginationRequests++;
             if (st.openInView()) openInViewRequests++;
-            for (Map.Entry<String, int[]> e : st.entities().entrySet()) {
-                long[] v = entities.get(e.getKey());
+            java.util.Set<String> seen = new java.util.HashSet<>(st.entities().keySet());
+            seen.addAll(st.attributesRead().keySet());
+            for (String type : seen) {
+                long[] v = entities.get(type);
                 if (v == null) {
                     if (entities.size() >= MAX_KEYS) continue;
-                    entities.put(e.getKey(), v = new long[2]);
+                    entities.put(type, v = new long[3]);
                 }
-                v[0] += e.getValue()[0];
-                v[1] = Math.max(v[1], e.getValue()[0]);
+                int[] loaded = st.entities().get(type);
+                int n = loaded == null ? 0 : loaded[0];
+                v[0] += n;
+                v[1] = Math.max(v[1], n);
+                v[2]++;
+                java.util.BitSet read = st.attributesRead().get(type);
+                EntityModel model = EntityModels.of(type);
+                if (model != null) {
+                    long[] reads = attributeReads.computeIfAbsent(type, k -> new long[model.attributes().size()]);
+                    if (read != null) {
+                        for (int i = read.nextSetBit(0); i >= 0 && i < reads.length; i = read.nextSetBit(i + 1)) {
+                            reads[i]++;
+                        }
+                    }
+                }
             }
             for (Map.Entry<String, RequestStats.LazyLoad> e : st.lazyLoads().entrySet()) {
                 Lazy l = lazy.get(e.getKey());
@@ -117,11 +136,35 @@ public final class ProfileRegistry implements FqListener {
             m.put("sqlTimeMsPerRequest", requests == 0 ? null : Math.round(sqlNanos / 1_000.0 / requests) / 1_000.0);
             List<Map<String, Object>> ents = new ArrayList<>();
             entities.forEach((type, v) -> {
+                if (v[0] == 0 && attributeReads.get(type) == null) return;
                 Map<String, Object> e = new LinkedHashMap<>();
                 e.put("entity", type);
                 e.put("loaded", v[0]);
                 e.put("perRequest", per(v[0]));
                 e.put("maxPerRequest", v[1]);
+                EntityModel model = EntityModels.of(type);
+                long[] reads = attributeReads.get(type);
+                if (model != null && !model.propertyAccess() && reads != null) {
+                    List<Map<String, Object>> attrs = new ArrayList<>();
+                    List<String> unread = new ArrayList<>();
+                    for (EntityModel.Attribute a : model.attributes()) {
+                        Map<String, Object> x = new LinkedHashMap<>();
+                        x.put("name", a.name());
+                        x.put("kind", a.kind().name());
+                        if (a.fetch() != null) {
+                            x.put("fetch", a.fetch());
+                            x.put("fetchExplicit", a.fetchExplicit());
+                        }
+                        if (a.large()) x.put("large", true);
+                        x.put("readRatio", Math.round(reads[a.index()] * 100.0 / v[2]) / 100.0);
+                        attrs.add(x);
+                        if (reads[a.index()] == 0 && a.kind() != EntityModel.Kind.ID) unread.add(a.name());
+                    }
+                    e.put("attributes", attrs);
+                    e.put("neverRead", unread);
+                } else if (model != null && model.propertyAccess()) {
+                    e.put("attributes", "not tracked (property access: Hibernate calls the getters itself)");
+                }
                 ents.add(e);
             });
             ents.sort(Comparator.comparingLong(e -> -(long) e.get("loaded")));

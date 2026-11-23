@@ -204,6 +204,50 @@ class InstrumentationTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void entityGettersAreTrackedPerRequest() throws Exception {
+        DemoServlet servlet = new DemoServlet();
+        servlet.pattern = "/fixture-books";
+        servlet.afterMapping = () -> {
+            var book = new io.github.anthonydeseille.flairquery.fixture.FixtureBook();
+            Fq.entityLoaded(book);                     // what Hibernate's addEntity hook reports
+            book.getId();
+            book.getTitle();
+            book.getTitle();
+            book.getLabel();                           // computed getter: not an attribute
+            book.isAvailable();
+            return "done";
+        };
+
+        servlet.service(FakeHttp.request("GET", "/fixture-books"), FakeHttp.response());
+        servlet.service(FakeHttp.request("GET", "/fixture-books"), FakeHttp.response());
+
+        var profile = installation.runtime().profiles().profiles().stream()
+                .filter(p -> p.get("endpoint").equals("GET /fixture-books")).findFirst().orElseThrow();
+        var entity = ((java.util.List<Map<String, Object>>) profile.get("entities")).stream()
+                .filter(e -> e.get("entity").equals(FIXTURE + ".FixtureBook")).findFirst().orElseThrow();
+        assertThat(entity).containsEntry("perRequest", 1.0);
+        assertThat((java.util.List<String>) entity.get("neverRead")).containsExactlyInAnyOrder(
+                "createdBy", "description", "cover", "summary", "isbn", "publisher", "author", "reviews", "tags");
+        var publisher = ((java.util.List<Map<String, Object>>) entity.get("attributes")).stream()
+                .filter(a -> a.get("name").equals("publisher")).findFirst().orElseThrow();
+        assertThat(publisher).containsEntry("kind", "TO_ONE").containsEntry("fetch", "EAGER")
+                .containsEntry("fetchExplicit", false).containsEntry("readRatio", 0.0);
+        var title = ((java.util.List<Map<String, Object>>) entity.get("attributes")).stream()
+                .filter(a -> a.get("name").equals("title")).findFirst().orElseThrow();
+        assertThat(title).containsEntry("readRatio", 1.0);
+        assertThat(io.github.anthonydeseille.flairquery.agent.model.EntityModels.describe())
+                .anySatisfy(m -> assertThat(m).containsEntry("entity", FIXTURE + ".FixtureBook"));
+    }
+
+    @Test
+    void gettersOutsideRequestsCostNothingAndRecordNothing() {
+        var book = new io.github.anthonydeseille.flairquery.fixture.FixtureBook();
+        assertThat(book.getTitle()).isEqualTo("t");                   // behaviour unchanged
+        assertThat(book.getLabel()).isEqualTo("t!");
+    }
+
+    @Test
     void agentFaultNeverBreaksTheBusinessQuery() throws Exception {
         try {
             Fq.install(new io.github.anthonydeseille.flairquery.agent.core.FqRuntime(

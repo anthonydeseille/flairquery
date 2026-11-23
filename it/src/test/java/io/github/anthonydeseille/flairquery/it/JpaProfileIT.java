@@ -94,6 +94,43 @@ class JpaProfileIT {
         assertThat(profile("GET /books").get("inMemoryPaginationRequests").asLong()).isZero();
     }
 
+    static JsonNode entity(JsonNode profile, String simpleName) {
+        return find(profile.get("entities"), "entity", DEMO + ".domain." + simpleName);
+    }
+
+    static java.util.List<String> texts(JsonNode array) {
+        return StreamSupport.stream(array.spliterator(), false).map(JsonNode::asText).toList();
+    }
+
+    @Test
+    void booksReadFourColumnsAndNeverTheEagerPublisher() throws Exception {
+        JsonNode book = entity(profile("GET /books"), "Book");             // BookDto(id, title, isbn, year)
+        assertThat(texts(book.get("neverRead"))).containsExactlyInAnyOrder("description", "author", "publisher");
+        JsonNode publisher = find(book.get("attributes"), "name", "publisher");
+        assertThat(publisher.get("fetch").asText()).isEqualTo("EAGER");
+        assertThat(publisher.get("fetchExplicit").asBoolean()).isFalse();  // trap 2: EAGER by default, never read
+        assertThat(find(book.get("attributes"), "name", "description").get("large").asBoolean()).isTrue();
+    }
+
+    @Test
+    void titlesReadOnlyIdAndTitle() throws Exception {
+        JsonNode book = entity(profile("GET /books/titles"), "Book");      // BookTitleDto(id, title)
+        assertThat(texts(book.get("neverRead")))                           // trap 3: over-fetching
+                .containsExactlyInAnyOrder("isbn", "publicationYear", "description", "author", "publisher");
+        assertThat(book.get("perRequest").asDouble()).isEqualTo(5000.0);   // prolific author 7
+    }
+
+    @Test
+    void entityModelIsExposed() throws Exception {
+        JsonNode model = app.agentJson("/fq/model").get("entities");
+        JsonNode book = find(model, "entity", DEMO + ".domain.Book");
+        assertThat(find(book.get("attributes"), "name", "author").get("fetch").asText()).isEqualTo("LAZY");
+        assertThat(texts(StreamSupport.stream(model.spliterator(), false).map(m -> m.get("entity")).collect(
+                com.fasterxml.jackson.databind.node.JsonNodeFactory.instance::arrayNode,
+                com.fasterxml.jackson.databind.node.ArrayNode::add, (a, b) -> a.addAll(b))))
+                .contains(DEMO + ".domain.Author", DEMO + ".domain.Publisher", DEMO + ".domain.Review");
+    }
+
     @Test
     void witnessLoadsNoEntityAndNothingLazily() throws Exception {
         JsonNode p = profile("GET /publishers/{id}");      // DTO projection

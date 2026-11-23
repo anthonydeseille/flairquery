@@ -260,6 +260,23 @@ public final class FqRuntime implements FqHooks {
     }
 
     @Override
+    public void attributeRead(Object entity, String getter) {
+        RequestContext ctx = profiled();
+        if (ctx == null) {
+            return;
+        }
+        io.github.anthonydeseille.flairquery.agent.model.EntityModel model =
+                io.github.anthonydeseille.flairquery.agent.model.EntityModels.of(entity.getClass());
+        if (model == null || model.propertyAccess()) {
+            return;
+        }
+        int index = model.attributeOfGetter(getter);
+        if (index >= 0) {
+            ctx.stats().attributeRead(model.className(), index);
+        }
+    }
+
+    @Override
     public void inMemoryPagination() {
         RequestContext ctx = profiled();
         if (ctx != null) {

@@ -10,7 +10,10 @@ import io.github.anthonydeseille.flairquery.agent.jdbc.SqlArgumentAdvice;
 import io.github.anthonydeseille.flairquery.agent.jdbc.StatementExecuteAdvice;
 import io.github.anthonydeseille.flairquery.agent.log.JsonLog;
 import io.github.anthonydeseille.flairquery.agent.orm.CollectionInitializeAdvice;
+import io.github.anthonydeseille.flairquery.agent.orm.EntityGetterAdvice;
 import io.github.anthonydeseille.flairquery.agent.orm.EntityLoadedAdvice;
+import io.github.anthonydeseille.flairquery.agent.model.EntityModelReader;
+import io.github.anthonydeseille.flairquery.agent.model.EntityModels;
 import io.github.anthonydeseille.flairquery.agent.orm.InMemoryPaginationAdvice;
 import io.github.anthonydeseille.flairquery.agent.orm.ProxyInitializeAdvice;
 import io.github.anthonydeseille.flairquery.agent.spring.OpenInViewAdvice;
@@ -35,6 +38,8 @@ import java.util.concurrent.TimeUnit;
 
 import static net.bytebuddy.matcher.ElementMatchers.hasSuperType;
 import static net.bytebuddy.matcher.ElementMatchers.isAbstract;
+import static net.bytebuddy.matcher.ElementMatchers.isAnnotatedWith;
+import static net.bytebuddy.matcher.ElementMatchers.isStatic;
 import static net.bytebuddy.matcher.ElementMatchers.isInterface;
 import static net.bytebuddy.matcher.ElementMatchers.isSynthetic;
 import static net.bytebuddy.matcher.ElementMatchers.nameStartsWith;
@@ -212,6 +217,20 @@ public final class FqAgent {
         AgentBuilder builder = baseBuilder();
         if (!config.profile()) {
             return builder;
+        }
+        if (config.profileEntities()) {
+            builder = builder
+                    // phase 3: model of every @Entity (read from its annotations) + getter tracking
+                    .type(isAnnotatedWith(named("jakarta.persistence.Entity")).and(not(isInterface())))
+                    .transform((b, type, loader, module, domain) -> {
+                        EntityModels.register(EntityModelReader.read(type));
+                        return b;
+                    })
+                    .transform(new AgentBuilder.Transformer.ForAdvice()
+                            .advice(nameStartsWith("get").or(nameStartsWith("is"))
+                                            .and(takesArguments(0)).and(not(isStatic())).and(not(isAbstract()))
+                                            .and(not(returns(void.class))),
+                                    EntityGetterAdvice.class.getName()));
         }
         return builder
                 // phase 3: rows read (only result sets registered by a measured execution are counted)

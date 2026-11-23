@@ -66,6 +66,13 @@
       <version>6.0.0</version>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <!-- fixtures of the entity model reader (the agent itself never depends on JPA) -->
+      <groupId>jakarta.persistence</groupId>
+      <artifactId>jakarta.persistence-api</artifactId>
+      <version>3.1.0</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>
