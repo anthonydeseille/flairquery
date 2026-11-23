@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end test on the local cluster (kind by default):
 #   ephemeral namespace fq-e2e -> deploy (overlay e2e) -> corpus (profile M) -> pods Ready -> traffic
-#   -> assertions on /fq/top, /fq/nplusone, /metrics and the fq: tag in pg_stat_statements.
+#   -> assertions on /fq/top, /fq/nplusone, /metrics and the fq: tag in pg_stat_statements
+#   -> phase 2: collector health, then the trap scorecard (scripts/scorecard.py) from the collector API.
 # The namespace is ALWAYS deleted at the end, even on failure (trap), unless E2E_KEEP=1.
 #
 #   make e2e                      # full run (builds images)
@@ -15,6 +16,7 @@ NS=fq-e2e
 MAKE_ARGS=(OVERLAY=e2e NS=$NS)
 KUBECTL="${KUBECTL:-$( [ -x .tools/bin/kubectl ] && echo .tools/bin/kubectl || echo kubectl)} --context ${KUBE_CONTEXT:-kind-flairquery}"
 PF_PID=""
+PF2_PID=""
 FAILURES=0
 START=$(date +%s)
 
@@ -26,11 +28,13 @@ check() { local desc="$1"; shift; if "$@" >/dev/null 2>&1; then pass "$desc"; el
 cleanup() {
   local code=$?
   [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null || true
+  [ -n "$PF2_PID" ] && kill "$PF2_PID" 2>/dev/null || true
   if [ $code -ne 0 ] || [ $FAILURES -ne 0 ]; then
     log "diagnostics"
     $KUBECTL -n $NS get pods -o wide 2>/dev/null || true
     $KUBECTL -n $NS logs deploy/demo-app -c demo-app --tail=40 2>/dev/null || true
     $KUBECTL -n $NS logs job/fq-seed --tail=20 2>/dev/null || true
+    $KUBECTL -n $NS logs deploy/fq-collector --tail=30 2>/dev/null || true
   fi
   if [ "${E2E_KEEP:-}" = "1" ]; then
     log "E2E_KEEP=1: namespace $NS kept"
@@ -57,7 +61,7 @@ log "corpus profile $PROFILE"
 make seed "${MAKE_ARGS[@]}" PROFILE="$PROFILE"
 
 log "pods Ready"
-$KUBECTL -n $NS wait --for=condition=Ready pod -l 'app.kubernetes.io/part-of=flairquery,app.kubernetes.io/name in (postgres,demo-app)' --timeout=10m
+$KUBECTL -n $NS wait --for=condition=Ready pod -l 'app.kubernetes.io/part-of=flairquery,app.kubernetes.io/name in (postgres,demo-app,fq-collector)' --timeout=10m
 
 log "reset pg_stat_statements, then traffic"
 psql_q() { $KUBECTL -n $NS exec deploy/postgres -- psql -U flairquery -d flairquery -tAc "$1"; }
@@ -107,6 +111,32 @@ check "generated corpus is complete ($AUTHORS authors)" test "$AUTHORS" = "$(jq 
 PROLIFIC=$(jq -r '.prolificAuthorIds[0]' <<<"$EXPECT")
 check "prolific author $PROLIFIC has $(jq -r .prolificBooks <<<"$EXPECT") books" \
   test "$(psql_q "select count(*) from book where author_id = $PROLIFIC")" = "$(jq -r .prolificBooks <<<"$EXPECT")"
+
+log "phase 2: collector"
+CPORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
+$KUBECTL -n $NS port-forward svc/fq-collector "$CPORT:9465" >/dev/null 2>&1 &
+PF2_PID=$!
+for _ in $(seq 1 50); do curl -sf -m 1 "localhost:$CPORT/fq/collector/health" >/dev/null && break; sleep 0.3; done
+sleep 2   # let the logging collector flush the last auto_explain entries
+# a mark runs a collection cycle right now: everything up to the end of the traffic is collected
+MARK=$(curl -sf -X POST -H 'Content-Type: application/json' --data '{"name":"e2e-traffic-done"}' "localhost:$CPORT/fq/collector/marks" || true)
+CMETRICS=$(curl -sf "localhost:$CPORT/metrics")
+check "collector: mark set after the traffic (cycle run on demand)" jq -e '.name == "e2e-traffic-done"' <<<"$MARK"
+check "collector: no failed cycle" grep -q '^fq_collector_cycle_errors{target="postgres"} 0' <<<"$CMETRICS"
+check "collector: server log fully read (lag 0)" grep -q '^fq_collector_log_lag_bytes{target="postgres"} 0' <<<"$CMETRICS"
+check "collector: never connects as anything but fq_reader" \
+  test "$(psql_q "select count(*) from pg_stat_activity where application_name = 'flairquery-collector' and usename <> 'fq_reader'")" = 0
+
+log "phase 2: trap scorecard (demo-app/TRAPS.md)"
+mkdir -p target
+if python3 scripts/scorecard.py --url "http://localhost:$CPORT" --window 2h --markdown target/e2e-scorecard.md; then
+  pass "every trap reaches its phase 2 level, the witness is never flagged"
+else
+  fail "trap scorecard below expectations (see above)"
+fi
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ] && [ -f target/e2e-scorecard.md ]; then
+  { echo "### FlairQuery trap scorecard (profile $PROFILE)"; echo; cat target/e2e-scorecard.md; } >> "$GITHUB_STEP_SUMMARY"
+fi
 
 log "result: $FAILURES failure(s), profile $PROFILE, $(( $(date +%s) - START )) s"
 [ "$FAILURES" -eq 0 ]

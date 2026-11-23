@@ -26,7 +26,7 @@ operator: see [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Contents
 
-- [Phase 1 status](#phase-1-status)
+- [Phase 1 status](#phase-1-status) / [Phase 2 status](#phase-2-status)
 - [Repository layout](#repository-layout)
 - [Quick start (local, no Kubernetes)](#quick-start-local-no-kubernetes)
 - [Installing the agent on an application](#installing-the-agent-on-an-application)
@@ -37,6 +37,7 @@ operator: see [docs/ROADMAP.md](docs/ROADMAP.md).
 - [Corpus](#corpus)
 - [Tests and CI](#tests-and-ci)
 - [Measured overhead](#measured-overhead)
+- [Collector (phase 2)](#collector-phase-2)
 - [Kubernetes (kind) and K9s plugin](#kubernetes-kind-and-k9s-plugin)
 - [Fail-safe guarantees](#fail-safe-guarantees)
 - [Known limitations](#known-limitations)
@@ -55,19 +56,30 @@ operator: see [docs/ROADMAP.md](docs/ROADMAP.md).
 | K9s plugin | `/fq/top`, `/fq/nplusone`, `/fq/endpoints` from K9s | ✅ |
 | kind E2E + E2E CI | `make e2e`, ephemeral `fq-e2e` namespace, GitHub Actions on pull requests | ✅ |
 
+## Phase 2 status
+
+| Step | Content | Status |
+|---|---|---|
+| Shared core | `flairquery-core`: `SqlTag`, `SqlNormalizer` (agent + collector) | ✅ |
+| PostgreSQL config + fq-store | JSON server log, `fq_reader` grants, the collector's own database | ✅ |
+| Statistics snapshots | `pg_stat_statements` + `pg_stat_user_tables` deltas (baseline, resets, evictions) | ✅ |
+| auto_explain | exact per-execution endpoint/caller attribution, plan shapes, values masked | ✅ |
+| pg_stats, marks, compare | value-free column statistics, named marks, before/after comparison | ✅ |
+| kind, K9s, scorecard | collector Deployment, K9s views on the collector pod, trap scorecard in the e2e | ✅ |
+
 ## Repository layout
 
 ```
 flairquery/
 ├── core/           flairquery-core: shared fq: tag format/parser and SQL normalizer (no dependency)
-├── collector/      flairquery-collector: phase 2 PostgreSQL collector (in progress)
+├── collector/      flairquery-collector: phase 2 PostgreSQL collector
 ├── agent/          flairquery-agent: Java 21 agent (relocated ByteBuddy, dependency-free shaded jar)
 ├── demo-app/       flairquery-demo-app: target Spring Boot app, traps documented in TRAPS.md
 ├── it/             flairquery-it: integration tests (Testcontainers + real agent)
 ├── corpus/         data generator (Python stdlib), COPY loading, Open Library extract
 ├── deploy/         PostgreSQL config, local Compose, kind config, images, Kustomize (k8s/)
 ├── k9s/            K9s plugin (plugins.yaml) and its view script (fq-view.sh)
-├── scripts/        traffic (traffic.sh), overhead measurement (bench.sh)
+├── scripts/        traffic (traffic.sh), overhead (bench.sh), e2e (e2e.sh), trap scorecard (scorecard.py)
 ├── docs/ROADMAP.md phases 2 to 7 (design guide)
 └── Makefile        entry point (make help)
 ```
@@ -354,7 +366,7 @@ statements, so it is highest precisely on N+1 endpoints. Use `FQ_SAMPLING_RATE` 
 production. These figures are indicative (single client, development machine); a measurement under load
 on kind will come with the e2e step.
 
-## Collector (phase 2, in progress)
+## Collector (phase 2)
 
 `flairquery-collector` periodically reads the observed PostgreSQL with the read-only `fq_reader` role
 (`pg_stat_statements`, `pg_stat_statements_info`, `pg_stat_user_tables`), computes deltas between
@@ -420,6 +432,27 @@ make mark NAME=after
 make compare BEFORE=before AFTER=fix     # period "before" = before..fix, "after" = fix..after
 ```
 
+Trap scorecard of the demo app, from the collector API only (see [TRAPS.md](demo-app/TRAPS.md)):
+
+```bash
+make traffic-local && make scorecard-local
+```
+
+```
+  ok        1  DETECTED  (expected DETECTED)  N+1 authors -> books
+                20.0 book queries per authors page, caller AuthorController#toDto:47
+  ok        2  DETECTED  (expected DETECTED)  @ManyToOne EAGER publisher
+                publisher loaded one by one (40185 lookups) on 3 endpoints: GET /authors/with-books, GET /books, GET /books/titles; 49.0 per GET /books page
+  ...
+  ok        4  DETECTED  (expected DETECTED)  Missing index on review.reviewer_name
+                Index Scan on review_pkey discarding rows through Filter ((reviewer_name)::text = (?)::text), mean 317.378 ms; column selective: ~61 rows per value out of 3000003
+  ...
+  ok  witness  CLEAN     (expected CLEAN   )  Witness GET /publishers/{id}
+                Index Scan, mean 0.021 ms, never flagged
+
+  phase 2: 4/7 traps detected, 3 partial, witness clean; 0 below expectation
+```
+
 A period is a mark name (from that mark to the next one, or now) or an explicit range
 `<from>..<to>` whose bounds are mark names, ISO-8601 instants or `now`, e.g.
 `compare?before=2026-11-23T14:00:00Z..before&after=fix..now`.
@@ -442,6 +475,23 @@ configuration) — `make collector-local` re-applies the `fq_reader` grants itse
 | `FQ_COLLECTOR_LOG_MAX_MB` | `64` | maximum log read per cycle (the rest is read next cycle) |
 | `FQ_COLLECTOR_COLUMN_STATS_MINUTES` | `10` | minutes between `pg_stats` reads (`0`: disabled) |
 
+### PostgreSQL settings and their cost
+
+- **`log_destination = jsonlog` + `logging_collector = on`**: the server log goes to files in
+  `$PGDATA/log` (hourly files, truncated on rotation, so at most 24 files), not to stderr.
+  `kubectl logs deploy/postgres` / `docker compose logs postgres` therefore only show the startup lines;
+  read the log with `kubectl exec deploy/postgres -- tail -f /var/lib/postgresql/data/pgdata/log/postgresql-$(date -u +%H).json`
+  (or through the collector, which is the point).
+- **Volume**: with `auto_explain.log_min_duration = 0` every execution is logged with its plan. Profile M,
+  one round of `make traffic-local`: about **9 MB** of log. Bulk loads must disable it for their session
+  (`load.sh` does, see Known limitations).
+- **Production**: set `auto_explain.log_min_duration` to around `200ms` (and keep `log_analyze = off`,
+  `log_timing` irrelevant then). Exact attribution then covers the slow executions only; the others fall
+  back to the first tag seen in `pg_stat_statements` (`attributionSource: pg_stat_statements`). The log
+  contains parameter values (as any statement log): restrict access to it. The collector never copies them.
+- **Overhead on the database**: one read-only transaction per cycle on statistics views, `pg_stats` every
+  10 minutes, and log reads bounded by `FQ_COLLECTOR_LOG_MAX_MB`; never an application table.
+
 ## Kubernetes (kind) and K9s plugin
 
 ### Requirements
@@ -456,10 +506,12 @@ is pinned to the `kind-flairquery` context, never to your current context.
 
 ```bash
 make cluster                 # kind cluster "flairquery" (CLUSTER_TOOL=k3d also supported)
-make build                   # jars + images (agent, demo-app, tools) loaded into the cluster
+make build                   # jars + images (agent, demo-app, collector, tools) loaded into the cluster
 make deploy                  # OVERLAY=dev (default) | e2e | pool-overflow, waits for readiness
 make seed PROFILE=M          # corpus Job (COPY); FORCE=1 to reload
 make load ROUNDS=5           # traffic Job on every demo endpoint
+make scorecard               # trap scorecard from the collector of the namespace
+make collector-port-forward  # collector on localhost:9465 (make mark / compare / scorecard-local)
 make status                  # pods, services, PVC, jobs
 make undeploy                # deletes the namespace (and its data)
 make clean                   # deletes the cluster and the FlairQuery images
@@ -484,6 +536,10 @@ What gets deployed (`deploy/k8s/base`), every object labelled `app.kubernetes.io
 - **Deliberately mis-sized resources** (phase 6 targets): requests far below real usage (`25m` /
   `64Mi`), tight CPU limit (`500m`, slow startup through throttling), `MaxRAMPercentage=80` too high
   for a `768Mi` limit.
+- **fq-store** (plain PostgreSQL 16) and the **collector** (`fq-collector`, port 9465, one replica:
+  two would store every delta twice), reading PostgreSQL as `fq_reader`. `make deploy` re-applies the
+  idempotent `fq_reader` grants (`make db-grants`), needed on a volume created before phase 2.
+  The e2e overlay sets a 10 s cycle.
 - **Jobs** (`deploy/k8s/jobs`): `fq-seed` (corpus through `COPY`, waits for the Liquibase schema) and
   `fq-load` (traffic), both on the `flairquery/tools` image.
 
@@ -508,6 +564,10 @@ waits for the pods to be Ready, resets `pg_stat_statements`, generates traffic, 
 | `fq:`-tagged statements present, witness tag with its caller | `pg_stat_statements` |
 | trap 7 spills to disk (`temp_blks_written > 0`) | `pg_stat_statements` |
 | generated corpus complete, prolific author has exactly 5,000 books | database vs `generate.py --expect` |
+| collector: mark set right after the traffic (cycle on demand), no failed cycle, log fully read, connected as `fq_reader` only | collector API, `/metrics`, `pg_stat_activity` |
+| **trap scorecard**: every trap reaches its phase 2 level, the witness is never flagged | `scripts/scorecard.py` on the collector API |
+
+The scorecard is also written to `target/e2e-scorecard.md` and, in GitHub Actions, to the job summary.
 
 The namespace is **always** deleted at the end, even on failure or Ctrl-C (`trap`); on failure, pods,
 application logs and seed logs are printed first. Assertions rely on the generated, deterministic part of
@@ -532,6 +592,23 @@ On the **pods** view, select the demo app pod:
 | `Shift-E` | per-endpoint summary (`/fq/endpoints`) |
 
 (`Shift-T` and `Shift-N` are already bound by K9s in the pods view: sort by restarts and by name.)
+
+On the **collector pod** (`fq-collector-*`), the same shortcuts show the database side over the last hour
+(`FQ_WINDOW`):
+
+| Shortcut | View |
+|---|---|
+| `Shift-Q` | top statements by total time, each with its exact split per endpoint and caller |
+| `Shift-W` | before/after comparison of the last two marks (needs two marks) |
+| `Shift-E` | endpoints: executions, SQL time, heaviest statements |
+
+```
+ 4. 419 ms total   40185 calls   mean 0.01 ms   read 290 blk   temp 0 blk
+    24520    GET /authors/with-books  <-  AuthorService#withBooks:28
+    15420    GET /books/titles  <-  BookService#titlesOfAuthor:29
+    245      GET /books  <-  BookService#firstBooks:23
+    sql: select p1_0.id,p1_0.country,p1_0.name from publisher p1_0 where p1_0.id=$1
+```
 
 The plugin runs `k9s/fq-view.sh`, which opens a temporary `kubectl port-forward` to the agent port (no
 `curl` needed in the application image), renders the JSON with `jq`, pages it with `less` (`q` to go
@@ -614,9 +691,9 @@ every minute so that it never grows with the application's lifetime.
 ## Known limitations
 
 1. **`pg_stat_statements` keeps one text per `queryid`**, the first one seen: one tag, hence one endpoint
-   and one caller per normalized statement on the database side. Measured example: the publisher lookup
-   comes from 3 endpoints but is entirely attributed to the first tag seen. The exact breakdown comes from
-   the agent (`/fq/top`, `/fq/nplusone`).
+   and one caller per normalized statement on the database side. The phase 2 collector splits it exactly
+   through `auto_explain` (one entry per execution); without auto_explain entries (e.g. below
+   `log_min_duration` in production), the first tag seen remains the only attribution.
 2. **ThreadLocal context**: asynchronous work (`@Async`, `CompletableFuture`, async servlets, WebFlux) is
    not attributed (`endpoint=none`). `javax.*` servlets (Spring Boot 2) are not instrumented.
 3. **Statements executed before Spring handler mapping** (filters): the endpoint is the raw URI.
@@ -632,6 +709,11 @@ every minute so that it never grows with the application's lifetime.
 10. **`auto_explain` in dev** (`log_min_duration=0`) produces very large logs. Before the fix, one profile M
     load wrote 14 GB of server logs: seeding now disables `auto_explain` for its session, and the local
     container caps its logs.
+11. **Before/after comparisons are totals per period**: the database does not know how many HTTP requests
+    ran, so compare periods that ran the same traffic. Per-request figures come with the phase 3 endpoint
+    profile.
+12. **Collector: single target** (one database, one service); multi-service is planned
+    ([ROADMAP](docs/ROADMAP.md)).
 
 ## Data license
 

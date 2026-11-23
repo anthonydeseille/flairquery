@@ -3,10 +3,17 @@
 ## Phase 1 — Capture
 Java agent, SQL tagging (endpoint + caller), N+1 detection, metrics, demo on kind, K9s plugin.
 
-## Phase 2 — PostgreSQL collector
+## Phase 2 — PostgreSQL collector (done, single service)
 - Periodic reads of `pg_stat_statements`, `auto_explain`, `pg_stat_user_tables`, `pg_stats`
 - Correlation through the `fq:` tag → endpoint + caller
 - History storage (snapshots) to measure before/after gains
+
+Delivered: snapshots and deltas in a dedicated fq-store; exact per-execution attribution from the
+`auto_explain` JSON log (matched to `pg_stat_statements` by text, since the logged `query_id` is the next
+statement's inside explicit transactions); plan shapes with values masked; value-free `pg_stats`; marks
+and before/after comparison; trap scorecard in the e2e (4/7 detected, 3 partial, witness clean).
+Inputs for phase 3: the per-endpoint statements and their callers, plans and filtered scans, column
+selectivity.
 
 ### Multi-service evolution (after phase 2)
 Phase 2 targets a single service. Planned evolution for microservices:

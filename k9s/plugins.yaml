@@ -4,6 +4,8 @@
 #   Shift-Q : top SQL statements of the selected pod (/fq/top)
 #   Shift-W : N+1 warnings of the selected pod (/fq/nplusone)
 #   Shift-E : per-endpoint summary (/fq/endpoints)
+# On the collector pod (fq-collector-*), the same keys show: Shift-Q top statements with their exact
+# per-endpoint split, Shift-W the before/after comparison of the last two marks, Shift-E endpoints.
 # (Shift-T and Shift-N are already bound by K9s in the pods view: sort by restarts / name.)
 plugins:
   flairquery-top:

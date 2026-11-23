@@ -14,6 +14,7 @@ export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE
 endif
 AGENT_JAR := agent/target/flairquery-agent.jar
 DEMO_JAR  := demo-app/target/flairquery-demo-app.jar
+COLLECTOR_JAR := collector/target/flairquery-collector.jar
 LOCAL_COMPOSE := deploy/local/compose.yaml
 LOCAL_PG := PGHOST=localhost PGPORT=5432 PGUSER=flairquery PGPASSWORD=flairquery PGDATABASE=flairquery
 FQ_LOCAL_ENV := FQ_APP_NAME=demo-app FQ_BASE_PACKAGES=io.github.anthonydeseille.flairquery.demo
@@ -24,7 +25,7 @@ help: ## List targets
 
 # ---------------------------------------------------------------- build & tests
 .PHONY: jars test verify
-jars: ## Build the agent (shaded) and demo app jars, without tests
+jars: ## Build the agent (shaded), collector and demo app jars, without tests
 	./mvnw -B -q package -DskipTests
 
 test: ## Unit tests (Java + corpus)
@@ -53,6 +54,10 @@ compare: ## Compare two periods on the local collector (BEFORE=<mark|from..to> A
 	  | jq '{before, after, totals, notes, endpoints: [.endpoints[]? | {endpoint, before, after, changePct}], \
 	         statements: [.statements[]? | {queryid, status, endpoints, sql: .sql[0:100], before, after, \
 	         changePct: {totalTimeMs: .changePct.totalTimeMs, calls: .changePct.calls}, planChanged: .plans.changed}]}'
+
+.PHONY: scorecard-local
+scorecard-local: ## Trap scorecard from the local collector (WINDOW=1h); run make traffic-local first
+	python3 scripts/scorecard.py --url http://localhost:$(or $(COLLECTOR_PORT),9465) --window $(or $(WINDOW),1h)
 
 .PHONY: openlibrary
 openlibrary: ## Stream Open Library dumps and cache a small subset (~/.cache/flairquery/openlibrary)
@@ -95,7 +100,7 @@ KUBE_CONTEXT := $(if $(filter k3d,$(CLUSTER_TOOL)),k3d-$(CLUSTER_NAME),kind-$(CL
 KUBECTL := $(KUBECTL_BIN) --context $(KUBE_CONTEXT)
 OVERLAY ?= dev
 NS ?= $(if $(filter e2e,$(OVERLAY)),fq-e2e,fq-dev)
-IMAGES := flairquery/agent:dev flairquery/demo-app:dev flairquery/tools:dev
+IMAGES := flairquery/agent:dev flairquery/demo-app:dev flairquery/collector:dev flairquery/tools:dev
 OL_SUBSET ?= $(HOME)/.cache/flairquery/openlibrary/subset.jsonl.gz
 ROUNDS ?= 5
 DOCKER_CTX := target/docker
@@ -108,6 +113,17 @@ tools: ## Download pinned kind + kubectl into .tools/bin (checksums verified, no
 .PHONY: db-grants
 db-grants: ## (Re)apply the fq_reader role and grants on an existing cluster database (idempotent)
 	$(KUBECTL) -n $(NS) exec -i deploy/postgres -- psql -U flairquery -d flairquery -v ON_ERROR_STOP=1 -q < deploy/postgres/init-fq.sql
+
+.PHONY: scorecard collector-port-forward
+scorecard: ## Trap scorecard from the cluster collector (NS, WINDOW=1h); run make load first
+	@port=$$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'); \
+	$(KUBECTL) -n $(NS) port-forward svc/fq-collector $$port:9465 >/dev/null 2>&1 & pf=$$!; \
+	trap "kill $$pf 2>/dev/null" EXIT; \
+	for i in $$(seq 1 50); do curl -sf -m 1 localhost:$$port/fq/collector/health >/dev/null && break; sleep 0.3; done; \
+	python3 scripts/scorecard.py --url http://localhost:$$port --window $(or $(WINDOW),1h)
+
+collector-port-forward: ## Expose the cluster collector on localhost:9465 (then make mark / compare / scorecard-local)
+	$(KUBECTL) -n $(NS) port-forward svc/fq-collector 9465:9465
 
 .PHONY: e2e
 e2e: ## End-to-end test in the ephemeral fq-e2e namespace (E2E_PROFILE=M|S, E2E_SKIP_BUILD=1, E2E_KEEP=1)
@@ -122,13 +138,14 @@ else
 endif
 	$(KUBECTL) get nodes
 
-images: jars ## Build the agent, demo app and tools images
-	rm -rf $(DOCKER_CTX) && mkdir -p $(DOCKER_CTX)/agent $(DOCKER_CTX)/demo-app $(DOCKER_CTX)/tools/ol-cache
-	cp $(AGENT_JAR) $(DOCKER_CTX)/agent/ && cp $(DEMO_JAR) $(DOCKER_CTX)/demo-app/
+images: jars ## Build the agent, demo app, collector and tools images
+	rm -rf $(DOCKER_CTX) && mkdir -p $(DOCKER_CTX)/agent $(DOCKER_CTX)/demo-app $(DOCKER_CTX)/collector $(DOCKER_CTX)/tools/ol-cache
+	cp $(AGENT_JAR) $(DOCKER_CTX)/agent/ && cp $(DEMO_JAR) $(DOCKER_CTX)/demo-app/ && cp $(COLLECTOR_JAR) $(DOCKER_CTX)/collector/
 	cp -R corpus scripts $(DOCKER_CTX)/tools/ && rm -rf $(DOCKER_CTX)/tools/corpus/__pycache__
 	@if [ -f "$(OL_SUBSET)" ]; then cp "$(OL_SUBSET)" $(DOCKER_CTX)/tools/ol-cache/ && echo "Open Library subset included"; else echo "no Open Library subset cached (generated data only)"; fi
 	docker build -q -t flairquery/agent:dev -f deploy/images/agent/Dockerfile $(DOCKER_CTX)/agent
 	docker build -q -t flairquery/demo-app:dev -f deploy/images/demo-app/Dockerfile $(DOCKER_CTX)/demo-app
+	docker build -q -t flairquery/collector:dev -f deploy/images/collector/Dockerfile $(DOCKER_CTX)/collector
 	docker build -q -t flairquery/tools:dev -f deploy/images/tools/Dockerfile $(DOCKER_CTX)/tools
 
 build: images ## Build images and load them into the cluster
@@ -148,7 +165,10 @@ endif
 deploy: ## Deploy OVERLAY=dev|e2e|pool-overflow and wait until ready
 	$(KUBECTL_BIN) kustomize --load-restrictor=LoadRestrictionsNone deploy/k8s/overlays/$(OVERLAY) | $(KUBECTL) apply -f -
 	$(KUBECTL) -n $(NS) rollout status deploy/postgres --timeout=5m
+	@# init-fq.sql only runs on a fresh volume: re-apply the (idempotent) fq_reader grants on existing data
+	$(MAKE) --no-print-directory db-grants NS=$(NS) OVERLAY=$(OVERLAY)
 	$(KUBECTL) -n $(NS) rollout status deploy/demo-app --timeout=10m
+	$(KUBECTL) -n $(NS) rollout status deploy/fq-collector --timeout=5m
 
 seed: ## Load corpus PROFILE=S|M with a Job (FORCE=1 to reload)
 	-$(KUBECTL) -n $(NS) delete job fq-seed --ignore-not-found --wait=true

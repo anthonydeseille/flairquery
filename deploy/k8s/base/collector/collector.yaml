@@ -1,0 +1,79 @@
+# FlairQuery collector (phase 2): one target, the demo PostgreSQL, read with the read-only fq_reader role.
+# Writes only into fq-store. Its HTTP API (/fq/collector/*) and /metrics listen on 9465.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fq-collector
+  labels:
+    app.kubernetes.io/name: fq-collector
+    app.kubernetes.io/component: collector
+spec:
+  replicas: 1                # one collector per target: two would store every delta twice
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fq-collector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fq-collector
+        app.kubernetes.io/component: collector
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9465"
+        prometheus.io/path: /metrics
+    spec:
+      containers:
+        - name: collector
+          image: flairquery/collector:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: FQ_COLLECTOR_TARGET_NAME
+              value: postgres
+            - name: FQ_COLLECTOR_TARGET_URL
+              value: jdbc:postgresql://postgres:5432/flairquery
+            - name: FQ_COLLECTOR_TARGET_USER
+              valueFrom: {secretKeyRef: {name: fq-reader-credentials, key: PGUSER}}
+            - name: FQ_COLLECTOR_TARGET_PASSWORD
+              valueFrom: {secretKeyRef: {name: fq-reader-credentials, key: PGPASSWORD}}
+            - name: FQ_COLLECTOR_STORE_URL
+              value: jdbc:postgresql://fq-store:5432/fqstore
+            - name: FQ_COLLECTOR_STORE_USER
+              valueFrom: {secretKeyRef: {name: fq-store-credentials, key: POSTGRES_USER}}
+            - name: FQ_COLLECTOR_STORE_PASSWORD
+              valueFrom: {secretKeyRef: {name: fq-store-credentials, key: POSTGRES_PASSWORD}}
+            - name: FQ_COLLECTOR_INTERVAL
+              value: "30"
+          ports:
+            - name: http
+              containerPort: 9465
+          readinessProbe:
+            httpGet: {path: /fq/collector/health, port: http}
+            periodSeconds: 5
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fq-collector
+  labels:
+    app.kubernetes.io/name: fq-collector
+spec:
+  selector:
+    app.kubernetes.io/name: fq-collector
+  ports:
+    - name: http
+      port: 9465
+      targetPort: http

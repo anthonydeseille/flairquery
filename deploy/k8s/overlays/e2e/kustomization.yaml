@@ -44,3 +44,10 @@ patches:
           name: data
           emptyDir:
             sizeLimit: 1Gi
+  - target:
+      kind: Deployment
+      name: fq-collector
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/env/7/value
+        value: "10"

@@ -11,6 +11,7 @@ resources:
   - postgres/postgres.yaml
   - demo-app/demo-app.yaml
   - fq-store/fq-store.yaml
+  - collector/collector.yaml
 configMapGenerator:
   - name: postgres-config
     files:
