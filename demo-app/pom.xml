@@ -14,7 +14,7 @@
 
   <groupId>io.github.anthonydeseille.flairquery</groupId>
   <artifactId>flairquery-demo-app</artifactId>
-  <version>0.1.0-SNAPSHOT</version>
+  <version>0.1.0</version>
   <name>FlairQuery :: Demo app</name>
   <description>Spring Boot / Hibernate target application with intentional performance traps (see TRAPS.md)</description>
 
