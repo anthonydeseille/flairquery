@@ -68,13 +68,13 @@ class CollectorIT {
     @BeforeEach
     void freshStoreAndStats() throws Exception {
         try (Connection c = store.connect(); Statement st = c.createStatement()) {
-            st.execute("TRUNCATE fq_snapshot, fq_statement, fq_table, fq_plan, fq_log_cursor CASCADE");
+            st.execute("TRUNCATE fq_snapshot, fq_statement, fq_table, fq_plan, fq_log_cursor, fq_mark, fq_column_stats CASCADE");
         }
         app("SELECT pg_stat_statements_reset()");
         Thread.sleep(50);
         Target target = new Target("it", observed.getJdbcUrl(), "fq_reader", "fq_reader");
         collector = new Collector(new PostgresSource(target), new SqlLogPlanSource(target, 64L * 1024 * 1024),
-                store, Duration.ofHours(72), Clock.systemUTC());
+                store, Duration.ofHours(72), Duration.ZERO, Clock.systemUTC()); // pg_stats refreshed explicitly
     }
 
     /** Runs SQL as the application role (not the collector's read-only role). */
@@ -208,6 +208,55 @@ class CollectorIT {
         assertThat(plans).hasSize(1);
         String summary = plans.get(0).get("summary").toString();
         assertThat(summary).contains("\"relation\":\"author\"", "name");
+        try (Connection c = store.connect(); Statement st = c.createStatement();
+             ResultSet rs = st.executeQuery("SELECT count(*) FROM fq_plan WHERE plan::text LIKE '%a42%' OR summary::text LIKE '%a42%'")) {
+            rs.next();
+            assertThat(rs.getLong(1)).as("no data value in fq-store").isZero();
+        }
+    }
+
+    @Test
+    void plansAreAttachedToTheirOwnStatementInsideExplicitTransactions() throws Exception {
+        // pgjdbc + explicit transaction: a statement's plan is logged when its portal closes, i.e. at the next
+        // statement or at COMMIT, with THAT statement's query_id. The collector must not trust it.
+        String byId = "/* fq:app=demo,endpoint=GET /a,caller=com.x.A#byId:1 */ SELECT name FROM author WHERE id = ?";
+        String byName = "/* fq:app=demo,endpoint=GET /b,caller=com.x.B#byName:2 */ SELECT id FROM author WHERE name = ?";
+        collector.collectOnce();
+        try (Connection c = DriverManager.getConnection(observed.getJdbcUrl(), "flairquery", "flairquery")) {
+            c.setAutoCommit(false);
+            for (int i = 0; i < 3; i++) {
+                try (var ps = c.prepareStatement(byId)) {
+                    ps.setLong(1, i + 1);
+                    ps.executeQuery().close();
+                }
+                try (var ps = c.prepareStatement(byName)) {
+                    ps.setString(1, "a" + (i + 1));
+                    ps.executeQuery().close();
+                }
+                c.commit();
+            }
+        }
+        Thread.sleep(300);
+        collector.collectOnce();
+
+        List<Map<String, Object>> top = store.topStatements("it", Instant.EPOCH, 50, Store.Order.CALLS);
+        long idQuery = queryidOf(top, "FROM author WHERE id = $1");
+        long nameQuery = queryidOf(top, "FROM author WHERE name = $1");
+        assertThat(store.plans("it", idQuery)).singleElement()
+                .satisfies(p -> assertThat(p.get("summary").toString()).contains("Index Scan").doesNotContain("Seq Scan"));
+        assertThat(store.plans("it", nameQuery)).singleElement()
+                .satisfies(p -> assertThat(p.get("summary").toString()).contains("Seq Scan"));
+        Map<String, Object> byNameRow = top.stream().filter(r -> Long.parseLong((String) r.get("queryid")) == nameQuery)
+                .findFirst().orElseThrow();
+        assertThat(byNameRow).containsEntry("attributionSource", "auto_explain").containsEntry("endpoint", "GET /b");
+        assertThat(store.endpoints("it", Instant.EPOCH, 5)).extracting(e -> e.get("endpoint") + "=" + e.get("executions"))
+                .contains("GET /a=3", "GET /b=3");
+    }
+
+    static long queryidOf(List<Map<String, Object>> top, String sqlPart) {
+        return top.stream().filter(r -> String.valueOf(r.get("sql")).contains(sqlPart))
+                .map(r -> Long.parseLong((String) r.get("queryid"))).findFirst()
+                .orElseThrow(() -> new AssertionError(sqlPart + " not collected: " + top));
     }
 
     static void run(String sql, int times) throws Exception {
@@ -254,6 +303,128 @@ class CollectorIT {
         } finally {
             http.stop();
         }
+    }
+
+    @Test
+    void columnStatisticsAreValueFreeAndLimitedToTablesSeen() throws Exception {
+        app("CREATE TABLE IF NOT EXISTS never_queried (id bigint, secret text)",
+            "INSERT INTO never_queried VALUES (1, 'top-secret')", "ANALYZE author", "ANALYZE never_queried");
+        collector.collectOnce();
+        app(TAG + "SELECT count(*) FROM author WHERE name = 'a42'");
+        Thread.sleep(300);
+        collector.collectOnce();
+
+        assertThat(collector.refreshColumnStats(Instant.now())).isPositive();
+
+        List<Map<String, Object>> columns = store.columnStats("it", null);
+        assertThat(columns).extracting(c -> c.get("table")).containsOnly("public.author");  // only tables seen
+        Map<String, Object> name = columns.stream().filter(c -> c.get("column").equals("name")).findFirst().orElseThrow();
+        assertThat(name).containsEntry("nDistinct", -1.0)           // 'a' || g: unique
+                .containsEntry("estimatedRows", 1000L)
+                .containsEntry("estimatedDistinct", 1000L)
+                .containsEntry("rowsPerValue", 1.0)
+                .containsEntry("nullFrac", 0.0);
+        assertThat(columns.toString()).doesNotContain("a42", "a1,", "top-secret");   // no data value stored
+        app("DROP TABLE never_queried");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void marksAndCompareShowAnIndexFix() throws Exception {
+        app("DROP TABLE IF EXISTS review_it",
+            "CREATE TABLE review_it (id bigint primary key, reviewer text, body text)",
+            "INSERT INTO review_it SELECT g, 'r' || (g % 5000), repeat('x', 200) FROM generate_series(1, 30000) g",
+            "ANALYZE review_it");
+        String search = "/* fq:app=demo,endpoint=GET /reviews/search,caller=com.x.ReviewController#search:31 */ "
+                + "SELECT id FROM review_it WHERE reviewer = ?";
+        collector.collectOnce();                              // baseline
+        assertThat(collector.mark("start", "trap 4 before the fix")).isPresent();
+        runText(search, 5);
+        Thread.sleep(300);
+        assertThat(collector.mark("fix", null)).isPresent();
+        assertThat(collector.mark("fix", null)).isEmpty();    // names are unique
+        app("CREATE INDEX review_it_reviewer ON review_it (reviewer)", "ANALYZE review_it");
+        runText(search, 5);
+        Thread.sleep(300);
+        collector.mark("end", null);
+
+        List<Store.Mark> marks = store.marks("it");
+        Map<String, Object> c = io.github.anthonydeseille.flairquery.collector.compare.Comparison.of(
+                store.periodData("it", io.github.anthonydeseille.flairquery.collector.compare.Periods.resolve("start", "before", marks, Instant.now())),
+                store.periodData("it", io.github.anthonydeseille.flairquery.collector.compare.Periods.resolve("fix", "after", marks, Instant.now())), 20);
+
+        Map<String, Object> row = ((List<Map<String, Object>>) c.get("statements")).stream()
+                .filter(s -> String.valueOf(s.get("sql")).contains("FROM review_it WHERE reviewer")).findFirst().orElseThrow();
+        assertThat(row).containsEntry("status", "both").containsEntry("endpoints", List.of("GET /reviews/search"));
+        assertThat((Map<String, Object>) row.get("before")).containsEntry("calls", 5L);
+        assertThat((Map<String, Object>) row.get("after")).containsEntry("calls", 5L);   // nothing leaks across the mark
+        Map<String, Object> plans = (Map<String, Object>) row.get("plans");
+        assertThat(plans.get("changed")).isEqualTo(true);
+        assertThat(plans.get("before").toString()).contains("review_it");             // Seq Scan on review_it
+        assertThat(plans.get("after").toString()).contains("\"seqScans\":[]");          // index used
+        long blocksBefore = (Long) ((Map<String, Object>) row.get("before")).get("sharedBlksHit")
+                + (Long) ((Map<String, Object>) row.get("before")).get("sharedBlksRead");
+        long blocksAfter = (Long) ((Map<String, Object>) row.get("after")).get("sharedBlksHit")
+                + (Long) ((Map<String, Object>) row.get("after")).get("sharedBlksRead");
+        assertThat(blocksAfter * 10).isLessThan(blocksBefore);
+        app("DROP TABLE review_it");
+    }
+
+    static void runText(String sql, int times) throws Exception {
+        try (Connection c = DriverManager.getConnection(observed.getJdbcUrl(), "flairquery", "flairquery")) {
+            for (int i = 0; i < times; i++) {
+                try (var ps = c.prepareStatement(sql)) {
+                    ps.setString(1, "r" + (i + 1));
+                    ps.executeQuery().close();
+                }
+            }
+        }
+    }
+
+    @Test
+    void httpMarksCompareAndColumns() throws Exception {
+        collector.collectOnce();
+        CollectorHttpServer http = new CollectorHttpServer(collector, store);
+        int port = http.start(0);
+        try {
+            HttpClient client = HttpClient.newHttpClient();
+            String base = "http://localhost:" + port;
+            HttpResponse<String> created = post(client, base + "/fq/collector/marks", "{\"name\":\"before\",\"note\":\"n\"}");
+            HttpResponse<String> duplicate = post(client, base + "/fq/collector/marks", "{\"name\":\"before\"}");
+            HttpResponse<String> badName = post(client, base + "/fq/collector/marks", "{\"name\":\"a b\"}");
+            HttpResponse<String> badJson = post(client, base + "/fq/collector/marks", "{");
+            tagged(3);
+            Thread.sleep(300);
+            post(client, base + "/fq/collector/marks", "{\"name\":\"after\"}");
+            String marks = get(client, base + "/fq/collector/marks").body();
+            HttpResponse<String> compare = get(client, base + "/fq/collector/compare?before=before&after=after");
+            HttpResponse<String> unknown = get(client, base + "/fq/collector/compare?before=nope&after=after");
+            HttpResponse<String> columns = get(client, base + "/fq/collector/columns?table=author");
+            String metrics = get(client, base + "/metrics").body();
+
+            assertThat(created.statusCode()).isEqualTo(201);
+            assertThat(created.body()).contains("\"name\":\"before\"", "\"note\":\"n\"");
+            assertThat(duplicate.statusCode()).isEqualTo(409);
+            assertThat(badName.statusCode()).isEqualTo(400);
+            assertThat(badJson.statusCode()).isEqualTo(400);
+            assertThat(marks).contains("\"before\"", "\"after\"");
+            assertThat(compare.statusCode()).isEqualTo(200);
+            assertThat(compare.body()).contains("\"statements\"", "\"endpoints\"", "\"totals\"", "\"status\":\"gone\"", "no collection cycle");
+            assertThat(unknown.statusCode()).isEqualTo(400);
+            assertThat(columns.statusCode()).isEqualTo(200);
+            assertThat(metrics).contains("fq_collector_cycle_duration_seconds{target=\"it\"}", "fq_collector_column_stats");
+        } finally {
+            http.stop();
+        }
+    }
+
+    static HttpResponse<String> post(HttpClient client, String url, String body) throws Exception {
+        return client.send(HttpRequest.newBuilder(URI.create(url)).header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body)).build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    static HttpResponse<String> get(HttpClient client, String url) throws Exception {
+        return client.send(HttpRequest.newBuilder(URI.create(url)).build(), HttpResponse.BodyHandlers.ofString());
     }
 
     private Map<String, Object> authorLookup() throws Exception {

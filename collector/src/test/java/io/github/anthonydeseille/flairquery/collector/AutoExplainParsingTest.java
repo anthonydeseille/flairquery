@@ -70,6 +70,39 @@ class AutoExplainParsingTest {
     }
 
     @Test
+    void planValuesAreMaskedBeforeAnythingElse() throws Exception {
+        JsonNode plan = parse(line("u", 1, "", 10)).plan();
+
+        assertThat(plan.toString()).doesNotContain("Alice", "00000")
+                .contains("reviewer_name")
+                .contains("\"Relation Name\":\"review\"")          // structure kept
+                .contains("r1_0.id");                                 // identifiers with digits kept
+        assertThat(PlanAnalyzer.summary(plan).path("seqScans").get(0).path("filter").asText())
+                .isEqualTo("((reviewer_name)::text = ?::text)");
+
+        JsonNode numbers = io.github.anthonydeseille.flairquery.collector.plan.PlanMasker.mask(JSON.readTree("""
+                {"Node Type":"Index Scan","Index Name":"idx_2024","Index Cond":"(id = 42)",
+                 "Filter":"((rating >= 4) AND (created_at > '2026-01-01 00:00:00+00'::timestamp with time zone))",
+                 "Plans":[{"Node Type":"Seq Scan","Relation Name":"t1","Filter":"(name = ANY ('{bob,alice}'::text[]))"}]}"""));
+        assertThat(numbers.toString()).doesNotContain("42", "2026", "bob", "alice", ">= 4")
+                .contains("idx_2024", "\"t1\"");
+    }
+
+    @Test
+    void indexScansUsedOnlyForTheirOrderAreReportedWithTheirFilter() throws Exception {
+        JsonNode plan = JSON.readTree("""
+                {"Node Type":"Limit","Plans":[{"Node Type":"Gather Merge","Plans":[
+                  {"Node Type":"Index Scan","Relation Name":"review","Index Name":"review_pkey",
+                   "Filter":"((reviewer_name)::text = ?::text)"}]}]}""");
+        JsonNode s = PlanAnalyzer.summary(plan);
+
+        assertThat(s.path("seqScans")).isEmpty();
+        assertThat(s.path("filteredScans").get(0).path("node").asText()).isEqualTo("Index Scan");
+        assertThat(s.path("filteredScans").get(0).path("index").asText()).isEqualTo("review_pkey");
+        assertThat(s.path("filteredScans").get(0).path("filter").asText()).contains("reviewer_name");
+    }
+
+    @Test
     void fingerprintIgnoresCostsButNotShape() throws Exception {
         JsonNode a = parse(line("u", 1, "", 10)).plan();
         JsonNode b = parse(line("u", 1, "", 99999)).plan();

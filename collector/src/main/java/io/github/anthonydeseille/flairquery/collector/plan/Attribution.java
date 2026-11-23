@@ -32,16 +32,25 @@ public final class Attribution {
 
     public record Result(Map<Key, Executions> executions, Map<PlanKey, PlanObservation> plans) { }
 
-    /** Entries of {@code excludedRole} (the collector itself) are ignored. */
+    /** Trusts the logged query_id: only correct in autocommit mode, see {@link QueryIdResolver}. */
     public static Result of(Collection<LogEntry> entries, String excludedRole) {
+        return of(entries, excludedRole, QueryIdResolver.trustingTheLog());
+    }
+
+    /**
+     * Entries of {@code excludedRole} (the collector itself) are ignored. The statement of each entry is found
+     * by {@code resolver}; entries without a statement keep their endpoint (queryid {@code 0}), no plan.
+     */
+    public static Result of(Collection<LogEntry> entries, String excludedRole, QueryIdResolver resolver) {
         Map<Key, Executions> executions = new LinkedHashMap<>();
         Map<PlanKey, PlanObservation> plans = new LinkedHashMap<>();
         for (LogEntry e : entries) {
-            if (e.roleName().equals(excludedRole) || e.queryId() == 0) {
+            if (e.roleName().equals(excludedRole)) {
                 continue;
             }
+            long queryId = resolver.resolve(e);
             Optional<SqlTag.FqTag> tag = SqlTag.parse(e.queryText());
-            Key key = new Key(e.dbName(), e.roleName(), e.queryId(),
+            Key key = new Key(e.dbName(), e.roleName(), queryId,
                     tag.map(SqlTag.FqTag::app).orElse(null),
                     tag.map(SqlTag.FqTag::endpoint).orElse(null),
                     tag.map(SqlTag.FqTag::caller).orElse(null));
@@ -49,8 +58,8 @@ public final class Attribution {
             x.count++;
             x.totalMs += e.durationMs();
             x.maxMs = Math.max(x.maxMs, e.durationMs());
-            if (!e.plan().isMissingNode()) {
-                PlanKey pk = new PlanKey(e.dbName(), e.queryId(), PlanAnalyzer.fingerprint(e.plan()));
+            if (queryId != QueryIdResolver.UNMATCHED && !e.plan().isMissingNode()) {
+                PlanKey pk = new PlanKey(e.dbName(), queryId, PlanAnalyzer.fingerprint(e.plan()));
                 PlanObservation p = plans.computeIfAbsent(pk, k -> {
                     PlanObservation o = new PlanObservation();
                     o.plan = e.plan();

@@ -1,9 +1,12 @@
 package io.github.anthonydeseille.flairquery.collector.http;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import io.github.anthonydeseille.flairquery.collector.Collector;
+import io.github.anthonydeseille.flairquery.collector.compare.Comparison;
+import io.github.anthonydeseille.flairquery.collector.compare.Periods;
 import io.github.anthonydeseille.flairquery.collector.log.Log;
 import io.github.anthonydeseille.flairquery.collector.store.Store;
 
@@ -13,20 +16,23 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.Executors;
 
 /**
- * Read-only HTTP API of the collector:
- * {@code /fq/collector/queries}, {@code /fq/collector/tables}, {@code /fq/collector/snapshots},
- * {@code /fq/collector/health}, {@code /metrics}.
+ * HTTP API of the collector. Everything is read-only except {@code POST /fq/collector/marks}, which writes a
+ * mark into fq-store (never into the observed database).
  */
 public final class CollectorHttpServer {
 
     public static final int SCHEMA_VERSION = 1;
+    private static final int MAX_BODY = 4096;
     private static final ObjectMapper JSON = new ObjectMapper();
 
     private final Collector collector;
@@ -64,6 +70,23 @@ public final class CollectorHttpServer {
                 throw new IllegalArgumentException("queryid must be a number");
             }
             return body(q, "plans", store.plans(collector.target(), queryid));
+        }));
+        server.createContext("/fq/collector/columns", ex -> handle(ex, q ->
+                body(q, "columns", store.columnStats(collector.target(), q.get("table")))));
+        server.createContext("/fq/collector/marks", this::marks);
+        server.createContext("/fq/collector/compare", ex -> handle(ex, q -> {
+            List<Store.Mark> marks = store.marks(collector.target());
+            Instant now = Instant.now();
+            Store.Period before = Periods.resolve(q.get("before"), "before", marks, now);
+            Store.Period after = Periods.resolve(q.get("after"), "after", marks, now);
+            int limit = Math.min(500, Math.max(1, Integer.parseInt(q.getOrDefault("limit", "20"))));
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("schemaVersion", SCHEMA_VERSION);
+            m.put("target", collector.target());
+            m.put("generatedAt", now.toString());
+            m.putAll(Comparison.of(store.periodData(collector.target(), before),
+                    store.periodData(collector.target(), after), limit));
+            return m;
         }));
         server.createContext("/fq/collector/tables", ex -> handle(ex, q ->
                 body(q, "tables", store.tableActivity(collector.target(), since(q)))));
@@ -109,6 +132,70 @@ public final class CollectorHttpServer {
         }
     }
 
+    /** GET: list; POST {"name":"before-fix","note":"..."}: runs a cycle now and marks it. */
+    private void marks(HttpExchange ex) {
+        if (!"POST".equals(ex.getRequestMethod())) {
+            handle(ex, q -> {
+                List<Map<String, Object>> list = new ArrayList<>();
+                for (Store.Mark m : store.marks(collector.target())) list.add(markJson(m));
+                return body(q, "marks", list);
+            });
+            return;
+        }
+        try (ex) {
+            int status;
+            Object result;
+            try {
+                byte[] raw = ex.getRequestBody().readNBytes(MAX_BODY + 1);
+                if (raw.length > MAX_BODY) throw new IllegalArgumentException("body too large");
+                JsonNode req = raw.length == 0 ? JSON.createObjectNode() : JSON.readTree(raw);
+                String name = req.path("name").asText("");
+                String note = req.hasNonNull("note") ? req.get("note").asText() : null;
+                if (!Periods.MARK_NAME.matcher(name).matches()) {
+                    throw new IllegalArgumentException("name is required: 1-64 characters among A-Z a-z 0-9 . _ -");
+                }
+                if (note != null && note.length() > 500) throw new IllegalArgumentException("note: 500 characters max");
+                if (store.marks(collector.target()).stream().anyMatch(m -> m.name().equals(name))) {
+                    status = 409;
+                    result = Map.of("error", "mark already exists: " + name);
+                } else {
+                    Optional<Store.Mark> mark;
+                    try {
+                        mark = collector.mark(name, note);
+                    } catch (Exception e) {
+                        Log.warn("mark: collection cycle failed", e, "mark", name);
+                        mark = null;
+                    }
+                    if (mark == null) {
+                        status = 503;
+                        result = Map.of("error", "collection cycle failed, mark not set (see collector logs)");
+                    } else if (mark.isEmpty()) {
+                        status = 409;
+                        result = Map.of("error", "mark already exists: " + name);
+                    } else {
+                        status = 201;
+                        result = markJson(mark.get());
+                    }
+                }
+            } catch (IllegalArgumentException | com.fasterxml.jackson.core.JsonProcessingException e) {
+                status = 400;
+                result = Map.of("error", String.valueOf(e.getMessage()));
+            }
+            send(ex, status, "application/json; charset=utf-8", JSON.writeValueAsBytes(result));
+        } catch (Exception e) {
+            Log.warn("http request failed", e, "path", ex.getRequestURI().getPath());
+        }
+    }
+
+    private static Map<String, Object> markJson(Store.Mark m) {
+        Map<String, Object> j = new LinkedHashMap<>();
+        j.put("name", m.name());
+        j.put("note", m.note());
+        j.put("takenAt", m.takenAt().toString());
+        j.put("snapshotId", m.snapshotId());
+        return j;
+    }
+
     private Map<String, Object> body(Map<String, String> q, String key, Object value) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("schemaVersion", SCHEMA_VERSION);
@@ -133,7 +220,14 @@ public final class CollectorHttpServer {
               .append(collector.lastSuccess() == null ? 0 : collector.lastSuccess().getEpochSecond()).append('\n')
               .append("# HELP fq_collector_log_lag_bytes Bytes of server log not read yet\n")
               .append("# TYPE fq_collector_log_lag_bytes gauge\n")
-              .append("fq_collector_log_lag_bytes{target=\"").append(t).append("\"} ").append(collector.logLag()).append('\n');
+              .append("fq_collector_log_lag_bytes{target=\"").append(t).append("\"} ").append(collector.logLag()).append('\n')
+              .append("# HELP fq_collector_cycle_duration_seconds Duration of the last successful cycle\n")
+              .append("# TYPE fq_collector_cycle_duration_seconds gauge\n")
+              .append("fq_collector_cycle_duration_seconds{target=\"").append(t).append("\"} ")
+              .append(collector.lastCycleSeconds()).append('\n')
+              .append("# HELP fq_collector_column_stats Columns with pg_stats statistics stored\n")
+              .append("# TYPE fq_collector_column_stats gauge\n")
+              .append("fq_collector_column_stats{target=\"").append(t).append("\"} ").append(collector.columnStats()).append('\n');
             send(ex, 200, "text/plain; version=0.0.4; charset=utf-8", sb.toString().getBytes(StandardCharsets.UTF_8));
         } catch (Exception e) {
             Log.warn("metrics failed", e);

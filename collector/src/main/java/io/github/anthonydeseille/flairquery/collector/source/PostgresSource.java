@@ -44,6 +44,22 @@ public final class PostgresSource {
             FROM pg_stat_user_tables
             """;
 
+    /**
+     * Only value-free columns of pg_stats: never most_common_vals, most_common_freqs, histogram_bounds or
+     * the element variants, which contain data values.
+     */
+    private static final String COLUMN_STATS_SQL = """
+            SELECT current_database(), s.schemaname, s.tablename, s.attname,
+                   s.n_distinct, s.null_frac, s.correlation, s.avg_width, c.reltuples
+            FROM pg_stats s
+            JOIN pg_namespace n ON n.nspname = s.schemaname
+            JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = s.tablename
+            WHERE s.schemaname NOT IN ('pg_catalog', 'information_schema')
+              AND s.tablename = ANY (?)
+              AND NOT s.inherited
+            ORDER BY 2, 3, 4
+            """;
+
     private final Target target;
 
     public PostgresSource(Target target) {
@@ -92,6 +108,33 @@ public final class PostgresSource {
                 return new Reading(info, statements, tables);
             }
         }
+    }
+
+    /** Value-free statistics of the given tables (all user schemas). Read-only transaction. */
+    public List<ColumnStatsRow> readColumnStats(java.util.Collection<String> tables) throws SQLException {
+        if (tables.isEmpty()) return List.of();
+        try (Connection c = connect()) {
+            c.setReadOnly(true);
+            c.setAutoCommit(false);
+            try (java.sql.PreparedStatement ps = c.prepareStatement(COLUMN_STATS_SQL)) {
+                ps.setArray(1, c.createArrayOf("text", tables.toArray()));
+                List<ColumnStatsRow> out = new ArrayList<>();
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        out.add(new ColumnStatsRow(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4),
+                                floatOrNull(rs, 5), floatOrNull(rs, 6), floatOrNull(rs, 7),
+                                rs.getObject(8) == null ? null : rs.getInt(8), floatOrNull(rs, 9)));
+                    }
+                }
+                c.commit();
+                return out;
+            }
+        }
+    }
+
+    private static Float floatOrNull(ResultSet rs, int i) throws SQLException {
+        float v = rs.getFloat(i);
+        return rs.wasNull() ? null : v;
     }
 
     Connection connect() throws SQLException {

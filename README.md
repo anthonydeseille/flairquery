@@ -369,11 +369,31 @@ snapshots and stores them in **its own database** (`fq-store`), never in the obs
   (`pg_ls_logdir`, `pg_read_binary_file`, read-only), so a statement run by three endpoints is split into
   three attributions with their execution counts. `attributionSource` says where endpoint/caller come from
   (`auto_explain`, or `pg_stat_statements` when the statement was not logged).
+- The `query_id` field of a log line is **not** trusted: with pgjdbc inside an explicit transaction, a
+  statement's plan is logged when its portal closes (at the next statement or at `COMMIT`), with the
+  `query_id` of *that* statement (observed on PostgreSQL 16). Each entry is matched to its
+  `pg_stat_statements` entry by normalized text (tag removed, literals as `?`) instead; the logged id only
+  breaks ties.
+- **No data value is stored.** auto_explain prints parameter values into plan expressions
+  (`Filter: (reviewer_name = 'Alice …')`); the collector replaces every literal of the plan with `?` as soon
+  as it reads it, before fingerprinting, summarizing or storing. The PostgreSQL server log itself still
+  contains them, as with any `log_min_duration_statement` setting: protect it accordingly.
 - **Plans**: distinct plan shapes per statement (fingerprint of the node tree, costs ignored) with a summary
-  of sequential scans and their filters, sorts and limits.
+  of sequential scans, scans that discard rows through a `Filter` (including an Index Scan used only for its
+  order, as trap 4 does on profile M), sorts and limits.
 - The first cycle skips the existing log content (consistent with the statistics baseline); a bounded
   amount of log is read per cycle (`FQ_COLLECTOR_LOG_MAX_MB`), the backlog is exposed as
   `fq_collector_log_lag_bytes`.
+- **Value-free column statistics** (`pg_stats`), every 10 minutes, only for the tables seen in plans or
+  sequential scans: `n_distinct`, `null_frac`, `correlation`, `avg_width`, plus the derived estimated
+  distinct count and rows per value (how selective an equality filter is). `most_common_vals`,
+  `histogram_bounds` and every other column holding data values are never read.
+- **Marks and before/after comparison.** `POST /fq/collector/marks` runs a collection cycle immediately
+  and names it, so activity before and after the mark falls into different snapshots.
+  `/fq/collector/compare` then compares two periods per statement (calls, time, blocks, temp, plan shape
+  changes, statements gone or new), per endpoint and in total. Values are **totals per period**: compare
+  periods that ran the same traffic (one `make traffic-local` each). The marks endpoint is the only write
+  of the API, and it writes into fq-store only.
 
 ```bash
 make demo-local              # terminal 1: PostgreSQL + fq-store (Compose) + demo app with the agent
@@ -384,7 +404,25 @@ curl -s 'localhost:9465/fq/collector/endpoints?window=15m' | jq      # exact, pe
 curl -s 'localhost:9465/fq/collector/plans?queryid=<queryid>' | jq    # plan shapes of one statement
 curl -s 'localhost:9465/fq/collector/tables?window=15m' | jq
 curl -s 'localhost:9465/fq/collector/snapshots' | jq
+curl -s 'localhost:9465/fq/collector/columns?table=review' | jq       # value-free pg_stats
 ```
+
+Measuring a fix (here trap 4, the missing index on `review.reviewer_name`):
+
+```bash
+make mark NAME=before            # runs a cycle now and names it
+make traffic-local
+make mark NAME=fix
+docker compose -f deploy/local/compose.yaml exec postgres psql -U flairquery -d flairquery \
+  -c 'CREATE INDEX CONCURRENTLY review_reviewer_name ON review (reviewer_name)'
+make traffic-local
+make mark NAME=after
+make compare BEFORE=before AFTER=fix     # period "before" = before..fix, "after" = fix..after
+```
+
+A period is a mark name (from that mark to the next one, or now) or an explicit range
+`<from>..<to>` whose bounds are mark names, ISO-8601 instants or `now`, e.g.
+`compare?before=2026-11-23T14:00:00Z..before&after=fix..now`.
 
 `window` accepts `90s`, `15m`, `2h`, `1d`; `order` accepts `time`, `calls`, `mean`, `temp`, `reads`.
 If your local PostgreSQL volume predates phase 2, run `make db-restart-local` once (JSON log
@@ -402,6 +440,7 @@ configuration) — `make collector-local` re-applies the `fq_reader` grants itse
 | `FQ_COLLECTOR_HTTP_PORT` | `9465` | HTTP API and `/metrics` |
 | `FQ_COLLECTOR_PLANS` | `true` | read auto_explain plans from the JSON server log |
 | `FQ_COLLECTOR_LOG_MAX_MB` | `64` | maximum log read per cycle (the rest is read next cycle) |
+| `FQ_COLLECTOR_COLUMN_STATS_MINUTES` | `10` | minutes between `pg_stats` reads (`0`: disabled) |
 
 ## Kubernetes (kind) and K9s plugin
 

@@ -23,6 +23,7 @@ class CollectorConfigTest {
         assertThat(c.interval()).isEqualTo(Duration.ofSeconds(30));
         assertThat(c.retention()).isEqualTo(Duration.ofHours(72));
         assertThat(c.httpPort()).isEqualTo(9465);
+        assertThat(c.columnStatsInterval()).isEqualTo(Duration.ofMinutes(10));
         assertThat(c.targets().get(0).toString()).doesNotContain("fq_reader@").doesNotContain("password");
     }
 

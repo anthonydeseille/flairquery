@@ -39,6 +39,21 @@ verify: ## Unit + integration tests (Testcontainers, needs Docker)
 db-grants-local: ## (Re)apply the fq_reader role and grants on the local Compose database (idempotent)
 	docker compose -f $(LOCAL_COMPOSE) exec -T postgres psql -U flairquery -d flairquery -v ON_ERROR_STOP=1 -q < deploy/postgres/init-fq.sql
 
+.PHONY: mark
+mark: ## Name the current moment on the local collector (NAME=before-fix [NOTE=...]); runs a cycle now
+	@test -n "$(NAME)" || { echo "usage: make mark NAME=before-fix [NOTE=...]"; exit 2; }
+	@jq -n --arg name "$(NAME)" --arg note "$(NOTE)" '{name: $$name} + (if $$note == "" then {} else {note: $$note} end)' \
+	  | curl -sS -X POST -H 'Content-Type: application/json' --data-binary @- localhost:$(or $(COLLECTOR_PORT),9465)/fq/collector/marks | jq
+
+.PHONY: compare
+compare: ## Compare two periods on the local collector (BEFORE=<mark|from..to> AFTER=<mark|from..to> [LIMIT=10])
+	@test -n "$(BEFORE)" -a -n "$(AFTER)" || { echo "usage: make compare BEFORE=before AFTER=fix"; exit 2; }
+	@curl -sS -G localhost:$(or $(COLLECTOR_PORT),9465)/fq/collector/compare --data-urlencode "before=$(BEFORE)" \
+	  --data-urlencode "after=$(AFTER)" --data-urlencode "limit=$(or $(LIMIT),10)" \
+	  | jq '{before, after, totals, notes, endpoints: [.endpoints[]? | {endpoint, before, after, changePct}], \
+	         statements: [.statements[]? | {queryid, status, endpoints, sql: .sql[0:100], before, after, \
+	         changePct: {totalTimeMs: .changePct.totalTimeMs, calls: .changePct.calls}, planChanged: .plans.changed}]}'
+
 .PHONY: openlibrary
 openlibrary: ## Stream Open Library dumps and cache a small subset (~/.cache/flairquery/openlibrary)
 	python3 -I corpus/openlibrary/fetch.py $(OL_ARGS)

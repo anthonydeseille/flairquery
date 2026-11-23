@@ -3,6 +3,7 @@ package io.github.anthonydeseille.flairquery.collector.store;
 import io.github.anthonydeseille.flairquery.collector.delta.Counters;
 import io.github.anthonydeseille.flairquery.collector.delta.DeltaCalculator.Delta;
 import io.github.anthonydeseille.flairquery.collector.plan.Attribution;
+import io.github.anthonydeseille.flairquery.collector.source.ColumnStatsRow;
 import io.github.anthonydeseille.flairquery.collector.source.LogCursor;
 import io.github.anthonydeseille.flairquery.collector.source.StatementKey;
 import io.github.anthonydeseille.flairquery.collector.source.StatementRow;
@@ -169,7 +170,7 @@ public final class Store {
                 if (!cycle.baseline()) {
                     insertAttributions(c, snapshotId, cycle.attribution());
                 }
-                upsertPlans(c, cycle.target(), cycle.takenAt(), cycle.attribution());
+                upsertPlans(c, snapshotId, cycle.target(), cycle.takenAt(), cycle.attribution());
                 upsertLogCursors(c, cycle.target(), cycle.takenAt(), cycle.logCursors());
                 c.commit();
                 return snapshotId;
@@ -349,13 +350,17 @@ public final class Store {
         }
     }
 
-    private static void upsertPlans(Connection c, String target, Instant now, Attribution.Result r) throws SQLException {
+    private static void upsertPlans(Connection c, long snapshotId, String target, Instant now, Attribution.Result r)
+            throws SQLException {
         if (r == null || r.plans().isEmpty()) return;
         try (PreparedStatement ps = c.prepareStatement("""
                 INSERT INTO fq_plan (target, db_name, queryid, fingerprint, summary, plan, executions, first_seen, last_seen)
                 VALUES (?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, ?, ?)
                 ON CONFLICT (target, db_name, queryid, fingerprint) DO UPDATE
-                   SET executions = fq_plan.executions + excluded.executions, last_seen = excluded.last_seen""")) {
+                   SET executions = fq_plan.executions + excluded.executions, last_seen = excluded.last_seen
+                RETURNING id""");
+             PreparedStatement pe = c.prepareStatement(
+                     "INSERT INTO fq_plan_execution (snapshot_id, plan_id, executions) VALUES (?, ?, ?)")) {
             for (Map.Entry<Attribution.PlanKey, Attribution.PlanObservation> e : r.plans().entrySet()) {
                 ps.setString(1, target);
                 ps.setString(2, e.getKey().dbName());
@@ -366,9 +371,17 @@ public final class Store {
                 ps.setLong(7, e.getValue().count);
                 ps.setTimestamp(8, Timestamp.from(now));
                 ps.setTimestamp(9, Timestamp.from(now));
-                ps.addBatch();
+                long planId;
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    planId = rs.getLong(1);
+                }
+                pe.setLong(1, snapshotId);
+                pe.setLong(2, planId);
+                pe.setLong(3, e.getValue().count);
+                pe.addBatch();
             }
-            ps.executeBatch();
+            pe.executeBatch();
         }
     }
 
@@ -651,6 +664,274 @@ public final class Store {
         }
     }
 
+    // ---------------------------------------------------------------- pg_stats (value-free)
+
+    /** Tables worth reading pg_stats for: relations of the plans seen, and tables that had sequential scans. */
+    public List<String> relationsSeen(String target, Instant since) throws SQLException {
+        try (Connection c = connect(); PreparedStatement ps = c.prepareStatement("""
+                SELECT j #>> '{}' FROM fq_plan p, jsonb_path_query(p.plan, 'strict $.**."Relation Name"') AS j
+                WHERE p.target = ? AND p.last_seen > ?
+                UNION
+                SELECT t.table_name FROM fq_table_delta d
+                JOIN fq_snapshot sn ON sn.id = d.snapshot_id JOIN fq_table t ON t.id = d.table_id
+                WHERE sn.target = ? AND sn.taken_at > ? AND d.seq_scan > 0
+                ORDER BY 1""")) {
+            ps.setString(1, target);
+            ps.setTimestamp(2, Timestamp.from(since));
+            ps.setString(3, target);
+            ps.setTimestamp(4, Timestamp.from(since));
+            List<String> out = new ArrayList<>();
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) out.add(rs.getString(1));
+            }
+            return out;
+        }
+    }
+
+    public void upsertColumnStats(String target, Instant now, List<ColumnStatsRow> rows) throws SQLException {
+        if (rows.isEmpty()) return;
+        try (Connection c = connect(); PreparedStatement ps = c.prepareStatement("""
+                INSERT INTO fq_column_stats (target, db_name, schema_name, table_name, column_name, n_distinct,
+                                             null_frac, correlation, avg_width, reltuples, collected_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (target, db_name, schema_name, table_name, column_name) DO UPDATE
+                   SET n_distinct = excluded.n_distinct, null_frac = excluded.null_frac,
+                       correlation = excluded.correlation, avg_width = excluded.avg_width,
+                       reltuples = excluded.reltuples, collected_at = excluded.collected_at""")) {
+            for (ColumnStatsRow r : rows) {
+                ps.setString(1, target);
+                ps.setString(2, r.dbName());
+                ps.setString(3, r.schema());
+                ps.setString(4, r.table());
+                ps.setString(5, r.column());
+                setFloat(ps, 6, r.nDistinct());
+                setFloat(ps, 7, r.nullFrac());
+                setFloat(ps, 8, r.correlation());
+                if (r.avgWidth() == null) ps.setNull(9, Types.INTEGER); else ps.setInt(9, r.avgWidth());
+                setFloat(ps, 10, r.reltuples());
+                ps.setTimestamp(11, Timestamp.from(now));
+                ps.addBatch();
+            }
+            ps.executeBatch();
+        }
+    }
+
+    /** Column statistics, optionally of one table; with derived distinct count and rows per value. */
+    public List<Map<String, Object>> columnStats(String target, String table) throws SQLException {
+        try (Connection c = connect(); PreparedStatement ps = c.prepareStatement("""
+                SELECT db_name, schema_name, table_name, column_name, n_distinct, null_frac, correlation, avg_width,
+                       reltuples, collected_at
+                FROM fq_column_stats WHERE target = ? AND (?::text IS NULL OR table_name = ?)
+                ORDER BY schema_name, table_name, column_name""")) {
+            ps.setString(1, target);
+            ps.setString(2, table);
+            ps.setString(3, table);
+            List<Map<String, Object>> out = new ArrayList<>();
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("database", rs.getString(1));
+                    m.put("table", rs.getString(2) + "." + rs.getString(3));
+                    m.put("column", rs.getString(4));
+                    Double nd = doubleOrNull(rs, 5);
+                    Double nullFrac = doubleOrNull(rs, 6);
+                    Double rows = doubleOrNull(rs, 9);
+                    m.put("nDistinct", nd);
+                    m.put("nullFrac", nullFrac);
+                    m.put("correlation", doubleOrNull(rs, 7));
+                    Object w = rs.getObject(8);
+                    m.put("avgWidth", w == null ? null : ((Number) w).intValue());
+                    m.put("estimatedRows", rows == null || rows < 0 ? null : Math.round(rows));
+                    Double distinct = ColumnStatsMath.distinct(nd, rows);
+                    m.put("estimatedDistinct", distinct == null ? null : Math.round(distinct));
+                    Double perValue = ColumnStatsMath.rowsPerValue(nd, nullFrac, rows);
+                    m.put("rowsPerValue", perValue == null ? null : round(perValue));
+                    m.put("collectedAt", rs.getTimestamp(10).toInstant().toString());
+                    out.add(m);
+                }
+            }
+            return out;
+        }
+    }
+
+    public long columnStatsCount(String target) throws SQLException {
+        try (Connection c = connect();
+             PreparedStatement ps = c.prepareStatement("SELECT count(*) FROM fq_column_stats WHERE target = ?")) {
+            ps.setString(1, target);
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getLong(1);
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- marks
+
+    public record Mark(String name, String note, Instant takenAt, Long snapshotId) { }
+
+    /** False when a mark with this name already exists for the target. */
+    public boolean insertMark(String target, Mark mark) throws SQLException {
+        try (Connection c = connect(); PreparedStatement ps = c.prepareStatement("""
+                INSERT INTO fq_mark (target, name, note, taken_at, snapshot_id) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (target, name) DO NOTHING""")) {
+            ps.setString(1, target);
+            ps.setString(2, mark.name());
+            ps.setString(3, mark.note());
+            ps.setTimestamp(4, Timestamp.from(mark.takenAt()));
+            if (mark.snapshotId() == null) ps.setNull(5, Types.BIGINT); else ps.setLong(5, mark.snapshotId());
+            return ps.executeUpdate() == 1;
+        }
+    }
+
+    public Long snapshotIdAt(String target, Instant takenAt) throws SQLException {
+        try (Connection c = connect(); PreparedStatement ps = c.prepareStatement(
+                "SELECT id FROM fq_snapshot WHERE target = ? AND taken_at = ? ORDER BY id DESC LIMIT 1")) {
+            ps.setString(1, target);
+            ps.setTimestamp(2, Timestamp.from(takenAt));
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getLong(1) : null;
+            }
+        }
+    }
+
+    /** Marks of the target, oldest first. */
+    public List<Mark> marks(String target) throws SQLException {
+        try (Connection c = connect(); PreparedStatement ps = c.prepareStatement(
+                "SELECT name, note, taken_at, snapshot_id FROM fq_mark WHERE target = ? ORDER BY taken_at, id")) {
+            ps.setString(1, target);
+            List<Mark> out = new ArrayList<>();
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    long sid = rs.getLong(4);
+                    out.add(new Mark(rs.getString(1), rs.getString(2), rs.getTimestamp(3).toInstant(),
+                            rs.wasNull() ? null : sid));
+                }
+            }
+            return out;
+        }
+    }
+
+    // ---------------------------------------------------------------- before / after comparison
+
+    /** A period (start, end]: the snapshots taken after {@code start} up to and including {@code end}. */
+    public record Period(String label, Instant start, Instant end) { }
+
+    public record StatementId(String db, String role, long queryid) { }
+
+    public static final class StatementTotals {
+        public long statementId;
+        public StatementId id;
+        public String sql;
+        public String endpoint;
+        public long calls;
+        public double totalMs;
+        public long rows;
+        public long sharedBlksHit;
+        public long sharedBlksRead;
+        public long tempBlksWritten;
+        public boolean restarted;
+    }
+
+    public record PlanUse(StatementId statement, String fingerprint, String summary, long executions) { }
+
+    public record EndpointUse(StatementId statement, String app, String endpoint, long executions, double totalMs) { }
+
+    public record PeriodData(Period period, int snapshots, boolean baselineOrReset, Map<Long, StatementTotals> statements,
+                             List<PlanUse> plans, List<EndpointUse> endpoints) { }
+
+    public PeriodData periodData(String target, Period p) throws SQLException {
+        try (Connection c = connect()) {
+            int snapshots;
+            boolean irregular;
+            try (PreparedStatement ps = c.prepareStatement("""
+                    SELECT count(*), coalesce(bool_or(baseline OR stats_reset_seen OR dealloc_delta > 0), false)
+                    FROM fq_snapshot WHERE target = ? AND taken_at > ? AND taken_at <= ?""")) {
+                bindPeriod(ps, target, p);
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    snapshots = rs.getInt(1);
+                    irregular = rs.getBoolean(2);
+                }
+            }
+            Map<Long, StatementTotals> statements = new LinkedHashMap<>();
+            try (PreparedStatement ps = c.prepareStatement("""
+                    SELECT s.id, s.db_name, s.role_name, s.queryid, s.query, s.endpoint,
+                           sum(d.calls), sum(d.total_exec_time), sum(d.rows), sum(d.shared_blks_hit),
+                           sum(d.shared_blks_read), sum(d.temp_blks_written), bool_or(d.restarted)
+                    FROM fq_statement_delta d
+                    JOIN fq_snapshot sn ON sn.id = d.snapshot_id
+                    JOIN fq_statement s ON s.id = d.statement_id
+                    WHERE sn.target = ? AND sn.taken_at > ? AND sn.taken_at <= ?
+                    GROUP BY s.id""")) {
+                bindPeriod(ps, target, p);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        StatementTotals t = new StatementTotals();
+                        t.statementId = rs.getLong(1);
+                        t.id = new StatementId(rs.getString(2), rs.getString(3), rs.getLong(4));
+                        t.sql = SqlTag.strip(rs.getString(5));
+                        t.endpoint = rs.getString(6);
+                        t.calls = rs.getLong(7);
+                        t.totalMs = rs.getDouble(8);
+                        t.rows = rs.getLong(9);
+                        t.sharedBlksHit = rs.getLong(10);
+                        t.sharedBlksRead = rs.getLong(11);
+                        t.tempBlksWritten = rs.getLong(12);
+                        t.restarted = rs.getBoolean(13);
+                        statements.put(t.statementId, t);
+                    }
+                }
+            }
+            List<PlanUse> plans = new ArrayList<>();
+            try (PreparedStatement ps = c.prepareStatement("""
+                    SELECT p.db_name, p.queryid, p.fingerprint, p.summary::text, sum(pe.executions)
+                    FROM fq_plan_execution pe
+                    JOIN fq_snapshot sn ON sn.id = pe.snapshot_id
+                    JOIN fq_plan p ON p.id = pe.plan_id
+                    WHERE sn.target = ? AND sn.taken_at > ? AND sn.taken_at <= ?
+                    GROUP BY p.id ORDER BY 5 DESC""")) {
+                bindPeriod(ps, target, p);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        // plans are logged per (database, queryid): the role is not part of the key
+                        plans.add(new PlanUse(new StatementId(rs.getString(1), null, rs.getLong(2)), rs.getString(3),
+                                rs.getString(4), rs.getLong(5)));
+                    }
+                }
+            }
+            List<EndpointUse> endpoints = new ArrayList<>();
+            try (PreparedStatement ps = c.prepareStatement("""
+                    SELECT a.db_name, a.role_name, a.queryid, a.app, a.endpoint, sum(a.executions), sum(a.total_ms)
+                    FROM fq_attribution a JOIN fq_snapshot sn ON sn.id = a.snapshot_id
+                    WHERE sn.target = ? AND sn.taken_at > ? AND sn.taken_at <= ?
+                    GROUP BY 1, 2, 3, 4, 5 ORDER BY 6 DESC""")) {
+                bindPeriod(ps, target, p);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        endpoints.add(new EndpointUse(new StatementId(rs.getString(1), rs.getString(2), rs.getLong(3)),
+                                rs.getString(4), rs.getString(5), rs.getLong(6), rs.getDouble(7)));
+                    }
+                }
+            }
+            return new PeriodData(p, snapshots, irregular, statements, plans, endpoints);
+        }
+    }
+
+    private static void bindPeriod(PreparedStatement ps, String target, Period p) throws SQLException {
+        ps.setString(1, target);
+        ps.setTimestamp(2, Timestamp.from(p.start()));
+        ps.setTimestamp(3, Timestamp.from(p.end()));
+    }
+
+    private static void setFloat(PreparedStatement ps, int i, Float v) throws SQLException {
+        if (v == null) ps.setNull(i, Types.REAL); else ps.setFloat(i, v);
+    }
+
+    private static Double doubleOrNull(ResultSet rs, int i) throws SQLException {
+        double v = rs.getDouble(i);
+        return rs.wasNull() ? null : v;
+    }
+
     private static void setInstant(PreparedStatement ps, int i, Instant v) throws SQLException {
         if (v == null) {
             ps.setNull(i, Types.TIMESTAMP_WITH_TIMEZONE);
@@ -659,7 +940,7 @@ public final class Store {
         }
     }
 
-    private static double round(double v) {
+    static double round(double v) {
         return Math.round(v * 1000.0) / 1000.0;
     }
 }

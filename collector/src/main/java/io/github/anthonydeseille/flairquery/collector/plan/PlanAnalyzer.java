@@ -44,7 +44,9 @@ public final class PlanAnalyzer {
     }
 
     /**
-     * {@code {"nodeTypes":[...], "seqScans":[{"relation":"review","filter":"..."}], "sorts":[{"keys":[...]}],
+     * {@code {"nodeTypes":[...], "seqScans":[{"relation":"review","filter":"..."}],
+     * "filteredScans":[{"node":"Index Scan","relation":"review","index":"review_pkey","filter":"..."}],
+     * "sorts":[{"keys":[...]}],
      * "hasLimit":true, "totalCost":123.4, "planRows":10}}.
      */
     public static ObjectNode summary(JsonNode plan) {
@@ -52,11 +54,13 @@ public final class PlanAnalyzer {
         TreeSet<String> types = new TreeSet<>();
         ArrayNode seqScans = JSON.createArrayNode();
         ArrayNode sorts = JSON.createArrayNode();
+        ArrayNode filtered = JSON.createArrayNode();
         boolean[] limit = {false};
-        walk(plan, types, seqScans, sorts, limit);
+        walk(plan, types, seqScans, sorts, filtered, limit);
         ArrayNode t = s.putArray("nodeTypes");
         types.forEach(t::add);
         s.set("seqScans", seqScans);
+        s.set("filteredScans", filtered);
         s.set("sorts", sorts);
         s.put("hasLimit", limit[0]);
         s.put("totalCost", plan.path("Total Cost").asDouble());
@@ -64,9 +68,19 @@ public final class PlanAnalyzer {
         return s;
     }
 
-    private static void walk(JsonNode n, TreeSet<String> types, ArrayNode seqScans, ArrayNode sorts, boolean[] limit) {
+    private static void walk(JsonNode n, TreeSet<String> types, ArrayNode seqScans, ArrayNode sorts,
+                             ArrayNode filtered, boolean[] limit) {
         String type = n.path("Node Type").asText();
         types.add(type);
+        if (n.has("Relation Name") && n.has("Filter")) {
+            // rows read then discarded one by one: a Seq Scan, or an Index Scan used only for its order
+            ObjectNode f = filtered.addObject();
+            f.put("node", type);
+            f.put("relation", n.path("Relation Name").asText());
+            if (n.has("Index Name")) f.put("index", n.get("Index Name").asText());
+            if (n.has("Index Cond")) f.put("indexCond", n.get("Index Cond").asText());
+            f.put("filter", n.get("Filter").asText());
+        }
         if (type.equals("Seq Scan")) {
             ObjectNode scan = seqScans.addObject();
             scan.put("relation", n.path("Relation Name").asText());
@@ -80,7 +94,7 @@ public final class PlanAnalyzer {
             limit[0] = true;
         }
         for (JsonNode child : n.path("Plans")) {
-            walk(child, types, seqScans, sorts, limit);
+            walk(child, types, seqScans, sorts, filtered, limit);
         }
     }
 }

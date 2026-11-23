@@ -28,7 +28,7 @@ public final class CollectorMain {
         Target target = config.targets().get(0);
         Collector collector = new Collector(new PostgresSource(target),
                 config.readPlans() ? new SqlLogPlanSource(target, config.logMaxBytesPerCycle()) : null,
-                store, config.retention(), Clock.systemUTC());
+                store, config.retention(), config.columnStatsInterval(), Clock.systemUTC());
         CollectorHttpServer http = new CollectorHttpServer(collector, store);
         int port = http.start(config.httpPort());
 
@@ -40,7 +40,8 @@ public final class CollectorMain {
         }, "fq-collector-shutdown"));
 
         Log.info("collector started", "target", config.targets().get(0).toString(), "intervalSeconds",
-                config.interval().toSeconds(), "retentionHours", config.retention().toHours(), "httpPort", port, "plans", config.readPlans());
+                config.interval().toSeconds(), "retentionHours", config.retention().toHours(), "httpPort", port, "plans", config.readPlans(),
+                "columnStatsMinutes", config.columnStatsInterval().toMinutes());
     }
 
     private static void migrateWithRetry(Store store) throws Exception {

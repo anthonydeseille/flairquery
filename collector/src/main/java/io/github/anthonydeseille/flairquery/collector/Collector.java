@@ -27,13 +27,20 @@ public final class Collector {
     private final Store store;
     private final Duration retention;
     private final Clock clock;
+    private final Duration columnStatsInterval;   // zero: pg_stats not read
+    private Instant lastColumnStats;
+
+    final AtomicLong columnStats = new AtomicLong();
+    final AtomicLong lastCycleMicros = new AtomicLong();
 
     final AtomicLong cycles = new AtomicLong();
     final AtomicLong errors = new AtomicLong();
     final AtomicReference<Instant> lastSuccess = new AtomicReference<>();
     final AtomicLong logLag = new AtomicLong();
 
-    public Collector(PostgresSource source, PlanSource planSource, Store store, Duration retention, Clock clock) {
+    public Collector(PostgresSource source, PlanSource planSource, Store store, Duration retention,
+                     Duration columnStatsInterval, Clock clock) {
+        this.columnStatsInterval = columnStatsInterval;
         this.source = source;
         this.planSource = planSource;
         this.store = store;
@@ -49,6 +56,8 @@ public final class Collector {
     public long errors() { return errors.get(); }
     public Instant lastSuccess() { return lastSuccess.get(); }
     public long logLag() { return logLag.get(); }
+    public long columnStats() { return columnStats.get(); }
+    public double lastCycleSeconds() { return lastCycleMicros.get() / 1e6; }
 
     /** Never throws: a failed cycle is logged and counted, the next one retries. */
     public void runSafely() {
@@ -60,7 +69,8 @@ public final class Collector {
         }
     }
 
-    public Store.Cycle collectOnce() throws Exception {
+    /** Cycles are serialized: the scheduler and the marks endpoint both run them. */
+    public synchronized Store.Cycle collectOnce() throws Exception {
         long started = System.nanoTime();
         Instant now = clock.instant();
         PostgresSource.Reading reading = source.read();
@@ -104,7 +114,8 @@ public final class Collector {
         if (planSource != null) {
             try {
                 PlanSource.Batch batch = planSource.read(state.logCursors(), baseline);
-                attribution = Attribution.of(batch.entries(), source.target().user());
+                attribution = Attribution.of(batch.entries(), source.target().user(),
+                        new io.github.anthonydeseille.flairquery.collector.plan.QueryIdResolver(reading.statements()));
                 cursors = batch.cursors();
                 logEntries = batch.entries().size();
                 unparsable = batch.unparsable();
@@ -123,8 +134,11 @@ public final class Collector {
         store.save(cycle);
         int purged = store.deleteSnapshotsBefore(target(), now.minus(retention));
 
+        maybeRefreshColumnStats(now);
+
         cycles.incrementAndGet();
         lastSuccess.set(now);
+        lastCycleMicros.set((System.nanoTime() - started) / 1000);
         Log.info("snapshot", "target", target(), "baseline", baseline, "statements", reading.statements().size(),
                 "activeStatements", active, "statsReset", resetSeen, "evicted", deallocDelta,
                 "durationMs", Math.round(durationMs), "purgedSnapshots", purged, "planEntries", logEntries,
@@ -134,5 +148,43 @@ public final class Collector {
                     + "consider raising pg_stat_statements.max", null, "target", target(), "evicted", deallocDelta);
         }
         return cycle;
+    }
+
+    private void maybeRefreshColumnStats(Instant now) {
+        if (columnStatsInterval.isZero()) return;
+        if (lastColumnStats != null && now.isBefore(lastColumnStats.plus(columnStatsInterval))) return;
+        try {
+            if (refreshColumnStats(now) > 0) {
+                lastColumnStats = now;   // otherwise retried next cycle (no plan seen yet)
+            }
+        } catch (Exception e) {
+            // an enrichment: never fails the cycle
+            Log.warn("pg_stats not readable this cycle", e, "target", target());
+        }
+    }
+
+    /**
+     * Reads value-free pg_stats columns of the tables seen in plans or sequential scans during the retention
+     * window. Returns the number of columns stored.
+     */
+    public synchronized int refreshColumnStats(Instant now) throws Exception {
+        List<String> tables = store.relationsSeen(target(), now.minus(retention));
+        if (tables.isEmpty()) return 0;
+        List<io.github.anthonydeseille.flairquery.collector.source.ColumnStatsRow> rows = source.readColumnStats(tables);
+        store.upsertColumnStats(target(), now, rows);
+        columnStats.set(store.columnStatsCount(target()));
+        Log.debug("column statistics", "target", target(), "tables", tables.size(), "columns", rows.size());
+        return rows.size();
+    }
+
+    /**
+     * Sets a named mark aligned on a collection cycle run now: activity up to the mark is in the snapshots
+     * taken at or before it, activity after it in later snapshots. Empty if the name is already used.
+     */
+    public synchronized java.util.Optional<Store.Mark> mark(String name, String note) throws Exception {
+        Store.Cycle cycle = collectOnce();
+        Long snapshotId = store.snapshotIdAt(target(), cycle.takenAt());
+        Store.Mark mark = new Store.Mark(name, note, cycle.takenAt(), snapshotId);
+        return store.insertMark(target(), mark) ? java.util.Optional.of(mark) : java.util.Optional.empty();
     }
 }

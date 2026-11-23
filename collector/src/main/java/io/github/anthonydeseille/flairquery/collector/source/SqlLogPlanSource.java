@@ -106,7 +106,10 @@ public final class SqlLogPlanSource implements PlanSource {
         double duration = Double.parseDouble(message.substring("duration:".length(), message.indexOf(" ms")).trim());
         JsonNode explain = JSON.readTree(message.substring(message.indexOf('{', planAt)));
         return new LogEntry(timestamp(n.path("timestamp").asText()), n.path("dbname").asText(), n.path("user").asText(),
-                n.get("query_id").asLong(), duration, explain.path("Query Text").asText(), explain.path("Plan"));
+                n.get("query_id").asLong(), duration, explain.path("Query Text").asText(),
+                // values are removed before anything else sees the plan; the query text (with values when
+                // literals are inlined) is only used in memory for its tag and its statement, never stored
+                io.github.anthonydeseille.flairquery.collector.plan.PlanMasker.mask(explain.path("Plan")));
     }
 
     static Instant timestamp(String pg) {
