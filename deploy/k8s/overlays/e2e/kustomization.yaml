@@ -25,3 +25,22 @@ patches:
           name: data
           emptyDir:
             sizeLimit: 3Gi
+  - target:
+      kind: PersistentVolumeClaim
+      name: fq-store-data
+    patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: fq-store-data
+  - target:
+      kind: Deployment
+      name: fq-store
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/volumes/0
+        value:
+          name: data
+          emptyDir:
+            sizeLimit: 1Gi

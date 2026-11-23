@@ -26,5 +26,27 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+  # the collector's own database (snapshots); never the observed database
+  fq-store:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: fqstore
+      POSTGRES_USER: fqstore
+      POSTGRES_PASSWORD: fqstore
+    ports:
+      - "5433:5432"
+    volumes:
+      - fqstore:/var/lib/postgresql/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fqstore -d fqstore"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
 volumes:
   pgdata:
+  fqstore:

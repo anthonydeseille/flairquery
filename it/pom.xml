@@ -22,6 +22,7 @@
     <fq.agent.jar>${project.basedir}/../agent/target/flairquery-agent.jar</fq.agent.jar>
     <fq.demo.jar>${project.basedir}/../demo-app/target/flairquery-demo-app.jar</fq.demo.jar>
     <fq.corpus.dir>${project.basedir}/../corpus</fq.corpus.dir>
+    <fq.postgres.dir>${project.basedir}/../deploy/postgres</fq.postgres.dir>
   </properties>
 
   <dependencies>
@@ -36,6 +37,11 @@
       </exclusions>
     </dependency>
 
+    <dependency>
+      <groupId>io.github.anthonydeseille.flairquery</groupId>
+      <artifactId>flairquery-core</artifactId>
+      <scope>test</scope>
+    </dependency>
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
@@ -85,6 +91,7 @@
             <fq.agent.jar>${fq.agent.jar}</fq.agent.jar>
             <fq.demo.jar>${fq.demo.jar}</fq.demo.jar>
             <fq.corpus.dir>${fq.corpus.dir}</fq.corpus.dir>
+            <fq.postgres.dir>${fq.postgres.dir}</fq.postgres.dir>
             <fq.it.logs>${project.build.directory}/it-logs</fq.it.logs>
             <org.slf4j.simpleLogger.defaultLogLevel>warn</org.slf4j.simpleLogger.defaultLogLevel>
           </systemPropertyVariables>

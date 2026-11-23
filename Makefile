@@ -35,6 +35,10 @@ verify: ## Unit + integration tests (Testcontainers, needs Docker)
 	./mvnw -B verify
 
 # ---------------------------------------------------------------- local playground (no Kubernetes)
+.PHONY: db-grants-local
+db-grants-local: ## (Re)apply the fq_reader role and grants on the local Compose database (idempotent)
+	docker compose -f $(LOCAL_COMPOSE) exec -T postgres psql -U flairquery -d flairquery -v ON_ERROR_STOP=1 -q < deploy/postgres/init-fq.sql
+
 .PHONY: openlibrary
 openlibrary: ## Stream Open Library dumps and cache a small subset (~/.cache/flairquery/openlibrary)
 	python3 -I corpus/openlibrary/fetch.py $(OL_ARGS)
@@ -73,6 +77,10 @@ DOCKER_ARCH ?= $(shell docker version --format '{{.Server.Arch}}' 2>/dev/null ||
 .PHONY: tools
 tools: ## Download pinned kind + kubectl into .tools/bin (checksums verified, no sudo)
 	scripts/install-tools.sh
+
+.PHONY: db-grants
+db-grants: ## (Re)apply the fq_reader role and grants on an existing cluster database (idempotent)
+	$(KUBECTL) -n $(NS) exec -i deploy/postgres -- psql -U flairquery -d flairquery -v ON_ERROR_STOP=1 -q < deploy/postgres/init-fq.sql
 
 .PHONY: e2e
 e2e: ## End-to-end test in the ephemeral fq-e2e namespace (E2E_PROFILE=M|S, E2E_SKIP_BUILD=1, E2E_KEEP=1)

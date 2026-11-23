@@ -10,6 +10,7 @@ labels:
 resources:
   - postgres/postgres.yaml
   - demo-app/demo-app.yaml
+  - fq-store/fq-store.yaml
 configMapGenerator:
   - name: postgres-config
     files:
@@ -25,3 +26,18 @@ secretGenerator:
       - POSTGRES_DB=flairquery
       - POSTGRES_USER=flairquery
       - POSTGRES_PASSWORD=flairquery
+  # collector store credentials (dev-only)
+  - name: fq-store-credentials
+    options:
+      disableNameSuffixHash: true
+    literals:
+      - POSTGRES_DB=fqstore
+      - POSTGRES_USER=fqstore
+      - POSTGRES_PASSWORD=fqstore
+  # read-only role used by the collector on the observed database (created by init-fq.sql)
+  - name: fq-reader-credentials
+    options:
+      disableNameSuffixHash: true
+    literals:
+      - PGUSER=fq_reader
+      - PGPASSWORD=fq_reader

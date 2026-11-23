@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.postgresql.PGConnection;
 import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.containers.wait.strategy.Wait;
+import org.testcontainers.utility.MountableFile;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -14,6 +16,7 @@ import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -35,26 +38,34 @@ final class ItEnvironment {
 
     static synchronized PostgreSQLContainer<?> postgres() {
         if (postgres == null) {
+            // same configuration and role as the Compose and kind environments (deploy/postgres)
+            Path pgDir = Path.of(System.getProperty("fq.postgres.dir", "../deploy/postgres"));
             postgres = new PostgreSQLContainer<>("postgres:16")
                     .withDatabaseName("flairquery")
                     .withUsername("flairquery")
                     .withPassword("flairquery")
-                    .withCommand("postgres",
-                            "-c", "shared_preload_libraries=pg_stat_statements,auto_explain",
-                            "-c", "compute_query_id=on",
-                            "-c", "pg_stat_statements.track=all",
-                            "-c", "auto_explain.log_min_duration=0",
-                            "-c", "shared_buffers=32MB",
-                            "-c", "work_mem=64kB",
-                            "-c", "fsync=off");
+                    .withCopyFileToContainer(MountableFile.forHostPath(pgDir.resolve("postgresql-fq.conf")),
+                            "/etc/postgresql/postgresql.conf")
+                    .withCopyFileToContainer(MountableFile.forHostPath(pgDir.resolve("init-fq.sql")),
+                            "/docker-entrypoint-initdb.d/10-init-fq.sql")
+                    .withCommand("postgres", "-c", "config_file=/etc/postgresql/postgresql.conf", "-c", "fsync=off")
+                    // server logs go to JSON files (logging_collector), not to the container output: the
+                    // default "ready to accept connections" log wait would never match. TCP readiness only
+                    // succeeds once the real server runs (the init-time server listens on the socket only).
+                    .waitingFor(Wait.forSuccessfulCommand("pg_isready -h 127.0.0.1 -U flairquery -d flairquery")
+                            .withStartupTimeout(Duration.ofMinutes(2)));
             postgres.start();
-            exec("CREATE EXTENSION IF NOT EXISTS pg_stat_statements");
         }
         return postgres;
     }
 
     static String jdbcUrl() {
         return postgres().getJdbcUrl();
+    }
+
+    /** Connection as the read-only FlairQuery role (fq_reader). */
+    static Connection connectAsReader() throws SQLException {
+        return DriverManager.getConnection(postgres().getJdbcUrl(), "fq_reader", "fq_reader");
     }
 
     static Connection connect() throws SQLException {
