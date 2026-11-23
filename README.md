@@ -53,7 +53,7 @@ operator: see [docs/ROADMAP.md](docs/ROADMAP.md).
 | Overhead | p50/p99 latency and startup time with and without the agent | ✅ |
 | kind + Kustomize deployment | `dev` / `e2e` / `pool-overflow` overlays, injection through an initContainer | ✅ |
 | K9s plugin | `/fq/top`, `/fq/nplusone`, `/fq/endpoints` from K9s | ✅ |
-| kind E2E + E2E CI | `make e2e`, ephemeral `fq-e2e` namespace | ⏳ upcoming |
+| kind E2E + E2E CI | `make e2e`, ephemeral `fq-e2e` namespace, GitHub Actions on pull requests | ✅ |
 
 ## Repository layout
 
@@ -321,7 +321,8 @@ make verify    # + demo app (Testcontainers) + it/ integration (11), ~2 min, Doc
 | Agent unit tests | tag format, escaping of hostile values, caller resolution (CGLIB/JDK proxies, lambdas), configuration, SQL normalization, N+1, Prometheus output, HTTP server (daemon threads, busy port), fail-safe, real instrumentation on H2 and HikariCP |
 | Corpus unit tests | determinism, volumes, skewed distribution, foreign keys, Open Library mapping |
 | Integration (`it/`) | PostgreSQL 16 + corpus S + demo app in a separate JVM with the **real** jar: tag in `pg_stat_statements`, N+1 detected and witness not, one query counted through Hikari, `FQ_ENABLED=false`, injected faults without any effect on responses (compared byte for byte with a run without the agent), JVM exits when the app fails to start, shaded jar contains no foreign class |
-| CI | GitHub Actions, Java 21: unit + corpus + integration tests on every push |
+| E2E (kind) | see [End-to-end test](#end-to-end-test): 13 assertions in an ephemeral namespace |
+| CI | GitHub Actions, Java 21: unit + corpus + integration tests on every push; kind e2e on every pull request |
 
 **Non-default Docker (colima…)**: the Makefile picks the socket of the active Docker context. To run
 `./mvnw verify` directly:
@@ -356,8 +357,9 @@ on kind will come with the e2e step.
 ### Requirements
 
 Docker with **at least 4 CPUs and 6 GB of RAM** for the VM (`colima start --cpu 4 --memory 6`), `jq`,
-Python 3. `kind` and `kubectl` can come from your package manager, or be dropped into `.tools/bin/`
-(official release binaries); the Makefile uses `.tools/bin` first. Every `kubectl` call of the Makefile
+Python 3. `make tools` downloads pinned `kind` and `kubectl` release binaries into `.tools/bin/`
+(checksums verified, no sudo, no Homebrew needed); the Makefile uses `.tools/bin` first and falls back to
+the `PATH`. Every `kubectl` call of the Makefile
 is pinned to the `kind-flairquery` context, never to your current context.
 
 ### Deploy
@@ -394,6 +396,35 @@ What gets deployed (`deploy/k8s/base`), every object labelled `app.kubernetes.io
   for a `768Mi` limit.
 - **Jobs** (`deploy/k8s/jobs`): `fq-seed` (corpus through `COPY`, waits for the Liquibase schema) and
   `fq-load` (traffic), both on the `flairquery/tools` image.
+
+### End-to-end test
+
+```bash
+make e2e                      # full run: images + profile M (~5 min of test after the build)
+E2E_PROFILE=S make e2e        # profile S (~100 s)
+E2E_SKIP_BUILD=1 make e2e     # reuse the images already loaded in the cluster
+E2E_KEEP=1 make e2e           # keep the namespace for investigation
+```
+
+`scripts/e2e.sh` creates the ephemeral `fq-e2e` namespace, deploys the `e2e` overlay, loads the corpus,
+waits for the pods to be Ready, resets `pg_stat_statements`, generates traffic, then checks:
+
+| Assertion | Source |
+|---|---|
+| SQL statements listed with endpoint and caller; authors N+1 attributed to `AuthorController#toDto` | `/fq/top` |
+| N+1 detected on `GET /authors` (20 queries per request) and on the EAGER publisher of `GET /books` | `/fq/nplusone` |
+| witness `GET /publishers/{id}` never flagged, exactly 1 query per request | `/fq/nplusone`, `/fq/endpoints` |
+| `fq_queries_count` exposed, agent active, zero internal error | `/metrics` |
+| `fq:`-tagged statements present, witness tag with its caller | `pg_stat_statements` |
+| trap 7 spills to disk (`temp_blks_written > 0`) | `pg_stat_statements` |
+| generated corpus complete, prolific author has exactly 5,000 books | database vs `generate.py --expect` |
+
+The namespace is **always** deleted at the end, even on failure or Ctrl-C (`trap`); on failure, pods,
+application logs and seed logs are printed first. Assertions rely on the generated, deterministic part of
+the corpus only, never on the Open Library extract.
+
+CI: `.github/workflows/e2e.yml` runs `make tools` + `make e2e` (profile M) on every pull request, and on
+demand (`workflow_dispatch`, profile M or S).
 
 ### K9s plugin
 

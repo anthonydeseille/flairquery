@@ -6,6 +6,7 @@ labels:
   - pairs:
       app.kubernetes.io/part-of: flairquery
     includeSelectors: false
+    includeTemplates: true
 resources:
   - postgres/postgres.yaml
   - demo-app/demo-app.yaml

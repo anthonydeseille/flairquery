@@ -70,6 +70,14 @@ ROUNDS ?= 5
 DOCKER_CTX := target/docker
 DOCKER_ARCH ?= $(shell docker version --format '{{.Server.Arch}}' 2>/dev/null || echo amd64)
 
+.PHONY: tools
+tools: ## Download pinned kind + kubectl into .tools/bin (checksums verified, no sudo)
+	scripts/install-tools.sh
+
+.PHONY: e2e
+e2e: ## End-to-end test in the ephemeral fq-e2e namespace (E2E_PROFILE=M|S, E2E_SKIP_BUILD=1, E2E_KEEP=1)
+	KUBE_CONTEXT=$(KUBE_CONTEXT) KUBECTL="$(KUBECTL_BIN)" scripts/e2e.sh
+
 .PHONY: cluster build images deploy seed load status undeploy clean
 cluster: ## Create the local cluster (kind by default, CLUSTER_TOOL=k3d supported)
 ifeq ($(CLUSTER_TOOL),k3d)
@@ -94,11 +102,12 @@ ifeq ($(CLUSTER_TOOL),k3d)
 	$(K3D) image import -c $(CLUSTER_NAME) $(IMAGES) postgres:16
 else
 	@# `kind load docker-image` fails on multi-platform images with Docker's containerd image store
-	@# ("content digest ... not found"): export one platform to a temporary archive instead.
+	@# ("content digest ... not found"): fall back to a single-platform archive (deleted right after).
 	@mkdir -p $(DOCKER_CTX) && for img in $(IMAGES) postgres:16; do \
+	  if $(KIND) load docker-image --name $(CLUSTER_NAME) $$img >/dev/null 2>&1; then echo "loaded $$img"; else \
 	  docker save --platform linux/$(DOCKER_ARCH) -o $(DOCKER_CTX)/img.tar $$img && \
 	  $(KIND) load image-archive --name $(CLUSTER_NAME) $(DOCKER_CTX)/img.tar >/dev/null && \
-	  rm -f $(DOCKER_CTX)/img.tar && echo "loaded $$img"; done
+	  rm -f $(DOCKER_CTX)/img.tar && echo "loaded $$img (single-platform archive)"; fi; done
 endif
 
 deploy: ## Deploy OVERLAY=dev|e2e|pool-overflow and wait until ready
