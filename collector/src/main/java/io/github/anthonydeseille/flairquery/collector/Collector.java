@@ -150,12 +150,21 @@ public final class Collector {
         return cycle;
     }
 
+    /**
+     * Every {@code columnStatsInterval}, re-reads all the tables seen; in between, reads only the tables seen
+     * for the first time (or without statistics yet, e.g. not analyzed), so a new table never waits for the
+     * interval.
+     */
     private void maybeRefreshColumnStats(Instant now) {
         if (columnStatsInterval.isZero()) return;
-        if (lastColumnStats != null && now.isBefore(lastColumnStats.plus(columnStatsInterval))) return;
+        boolean due = lastColumnStats == null || !now.isBefore(lastColumnStats.plus(columnStatsInterval));
         try {
-            if (refreshColumnStats(now) > 0) {
-                lastColumnStats = now;   // otherwise retried next cycle (no plan seen yet)
+            if (due) {
+                if (refreshColumnStats(now) > 0) {
+                    lastColumnStats = now;   // otherwise retried next cycle (no plan seen yet)
+                }
+            } else {
+                refreshNewTables(now);
             }
         } catch (Exception e) {
             // an enrichment: never fails the cycle
@@ -168,7 +177,18 @@ public final class Collector {
      * window. Returns the number of columns stored.
      */
     public synchronized int refreshColumnStats(Instant now) throws Exception {
-        List<String> tables = store.relationsSeen(target(), now.minus(retention));
+        return readColumnStats(now, store.relationsSeen(target(), now.minus(retention)));
+    }
+
+    /** Only the tables seen that have no statistics stored yet. Returns the number of columns stored. */
+    public synchronized int refreshNewTables(Instant now) throws Exception {
+        java.util.Set<String> known = store.columnStatsTables(target());
+        List<String> missing = store.relationsSeen(target(), now.minus(retention)).stream()
+                .filter(t -> !known.contains(t)).toList();
+        return readColumnStats(now, missing);
+    }
+
+    private int readColumnStats(Instant now, List<String> tables) throws Exception {
         if (tables.isEmpty()) return 0;
         List<io.github.anthonydeseille.flairquery.collector.source.ColumnStatsRow> rows = source.readColumnStats(tables);
         store.upsertColumnStats(target(), now, rows);

@@ -754,6 +754,19 @@ public final class Store {
         }
     }
 
+    /** Tables that already have statistics stored. */
+    public java.util.Set<String> columnStatsTables(String target) throws SQLException {
+        try (Connection c = connect();
+             PreparedStatement ps = c.prepareStatement("SELECT DISTINCT table_name FROM fq_column_stats WHERE target = ?")) {
+            ps.setString(1, target);
+            java.util.Set<String> out = new java.util.HashSet<>();
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) out.add(rs.getString(1));
+            }
+            return out;
+        }
+    }
+
     public long columnStatsCount(String target) throws SQLException {
         try (Connection c = connect();
              PreparedStatement ps = c.prepareStatement("SELECT count(*) FROM fq_column_stats WHERE target = ?")) {

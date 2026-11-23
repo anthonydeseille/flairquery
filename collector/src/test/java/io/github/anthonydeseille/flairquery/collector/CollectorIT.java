@@ -329,6 +329,30 @@ class CollectorIT {
     }
 
     @Test
+    void aTableSeenAfterTheFirstStatisticsReadDoesNotWaitForTheInterval() throws Exception {
+        Target target = new Target("it", observed.getJdbcUrl(), "fq_reader", "fq_reader");
+        Collector hourly = new Collector(new PostgresSource(target), new SqlLogPlanSource(target, 64L * 1024 * 1024),
+                store, Duration.ofHours(72), Duration.ofHours(1), Clock.systemUTC());
+        app("DROP TABLE IF EXISTS late_table", "ANALYZE author");
+        hourly.collectOnce();                                   // baseline
+        app(TAG + "SELECT count(*) FROM author WHERE name = 'a1'");
+        Thread.sleep(300);
+        hourly.collectOnce();                                   // first pg_stats read: author only
+        assertThat(store.columnStatsTables("it")).containsExactly("author");
+
+        app("CREATE TABLE late_table (id bigint, label text)",
+            "INSERT INTO late_table SELECT g, 'l' || (g % 10) FROM generate_series(1, 500) g", "ANALYZE late_table",
+            TAG + "SELECT count(*) FROM late_table WHERE label = 'l1'");
+        Thread.sleep(300);
+        hourly.collectOnce();                                   // interval not elapsed, but late_table is new
+
+        assertThat(store.columnStatsTables("it")).contains("author", "late_table");
+        assertThat(store.columnStats("it", "late_table")).anySatisfy(c ->
+                assertThat(c).containsEntry("column", "label").containsEntry("estimatedDistinct", 10L));
+        app("DROP TABLE late_table");
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     void marksAndCompareShowAnIndexFix() throws Exception {
         app("DROP TABLE IF EXISTS review_it",
