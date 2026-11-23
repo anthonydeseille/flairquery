@@ -16,9 +16,16 @@ public final class EntityModel {
      * @param fetchExplicit the fetch type differs from the JPA default (EAGER for to-one, LAZY for to-many);
      *                      false for a to-one left EAGER, the cause of trap 2
      * @param large         TEXT / CLOB / LOB / long VARCHAR / byte[]: expensive to load for nothing
+     * @param targetType    associated entity class (to-one type, or element type of a to-many collection)
      */
     public record Attribute(int index, String name, String javaType, Kind kind, String fetch, boolean fetchExplicit,
-                            boolean large) {
+                            boolean large, String targetType) {
+
+        /** Basic attribute (no association target). */
+        public Attribute(int index, String name, String javaType, Kind kind, String fetch, boolean fetchExplicit,
+                         boolean large) {
+            this(index, name, javaType, kind, fetch, fetchExplicit, large, null);
+        }
 
         public boolean association() {
             return kind == Kind.TO_ONE || kind == Kind.TO_MANY;

@@ -86,7 +86,23 @@ public final class EntityModelReader {
             }
         }
         return new EntityModel.Attribute(index, f.getName(), javaType, kind, kind == EntityModel.Kind.BASIC
-                && !explicit ? null : fetch, explicit, large(javaType, a));
+                && !explicit ? null : fetch, explicit, large(javaType, a), target(f, kind));
+    }
+
+    /** to-one: the field type; to-many: the collection's element type when declared generically. */
+    private static String target(FieldDescription f, EntityModel.Kind kind) {
+        try {
+            if (kind == EntityModel.Kind.TO_ONE) {
+                return f.getType().asErasure().getName();
+            }
+            if (kind == EntityModel.Kind.TO_MANY && f.getType().getSort().isParameterized()) {
+                var args = f.getType().getTypeArguments();
+                return args.get(args.size() - 1).asErasure().getName();   // Map<K, V>: the value
+            }
+        } catch (RuntimeException e) {
+            // unresolvable generic type: no target
+        }
+        return null;
     }
 
     private static String fetchOf(AnnotationDescription assoc) {

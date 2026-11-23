@@ -131,6 +131,42 @@ class JpaProfileIT {
                 .contains(DEMO + ".domain.Author", DEMO + ".domain.Publisher", DEMO + ".domain.Review");
     }
 
+    static java.util.List<JsonNode> findings(String endpoint) throws Exception {
+        return StreamSupport.stream(app.agentJson("/fq/findings").get("findings").spliterator(), false)
+                .filter(f -> f.get("endpoint").asText().equals(endpoint)).toList();
+    }
+
+    static JsonNode finding(String endpoint, String kind) throws Exception {
+        java.util.List<JsonNode> all = findings(endpoint);
+        return all.stream().filter(f -> f.get("kind").asText().equals(kind)).findFirst()
+                .orElseThrow(() -> new AssertionError("no " + kind + " on " + endpoint + ": " + all));
+    }
+
+    @Test
+    void everyTrapHasItsFindingAndTheWitnessHasNone() throws Exception {
+        // trap 1: N+1 with its cause and caller
+        JsonNode n1 = finding("GET /authors", "N_PLUS_ONE_LAZY");
+        assertThat(n1.get("evidence").get("association").asText()).isEqualTo("Author.books");
+        assertThat(n1.get("evidence").get("caller").asText()).startsWith(DEMO + ".web.AuthorController#toDto:");
+        assertThat(n1.get("fix").asText()).contains("@EntityGraph(attributePaths = \"books\")");
+        // trap 2: EAGER by default, never read
+        JsonNode eager = finding("GET /books", "USELESS_EAGER");
+        assertThat(eager.get("evidence").get("association").asText()).isEqualTo("Book.publisher");
+        assertThat(eager.get("evidence").get("fetch").asText()).contains("JPA default");
+        // trap 3: over-fetching, the large description never read
+        JsonNode over = finding("GET /books/titles", "OVER_FETCHING");
+        assertThat(texts(over.get("evidence").get("largeColumnsNeverRead"))).containsExactly("description");
+        assertThat(texts(over.get("evidence").get("columnsRead"))).containsExactly("title");
+        // trap 5: JOIN FETCH + pagination
+        assertThat(finding("GET /authors/with-books", "IN_MEMORY_PAGINATION").get("evidence")
+                .get("statement").asText()).contains("join book");
+        // trap 6: open-in-view
+        assertThat(finding("GET /authors", "OPEN_IN_VIEW").get("evidence").get("lazyLoadsOutsideTransaction")
+                .get(0).get("caller").asText()).startsWith(DEMO + ".web.AuthorController#toDto:");
+        // witness: DTO projection, nothing to say
+        assertThat(findings("GET /publishers/{id}")).isEmpty();
+    }
+
     @Test
     void witnessLoadsNoEntityAndNothingLazily() throws Exception {
         JsonNode p = profile("GET /publishers/{id}");      // DTO projection

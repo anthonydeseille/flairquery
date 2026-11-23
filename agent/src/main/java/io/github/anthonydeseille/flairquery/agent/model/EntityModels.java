@@ -61,6 +61,7 @@ public final class EntityModels {
                     x.put("fetchExplicit", a.fetchExplicit());
                 }
                 if (a.large()) x.put("large", true);
+                if (a.targetType() != null) x.put("target", a.targetType());
                 attrs.add(x);
             }
             e.put("attributes", attrs);

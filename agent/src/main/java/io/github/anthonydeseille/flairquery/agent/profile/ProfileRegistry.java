@@ -26,6 +26,15 @@ public final class ProfileRegistry implements FqListener {
     static final int MAX_STATEMENTS_SHOWN = 20;
 
     private final Map<String, EndpointProfile> endpoints = new ConcurrentHashMap<>();
+    private final int nPlusOneThreshold;
+
+    public ProfileRegistry() {
+        this(5);
+    }
+
+    public ProfileRegistry(int nPlusOneThreshold) {
+        this.nPlusOneThreshold = nPlusOneThreshold;
+    }
 
     @Override
     public void onRequest(RequestSummary s) {
@@ -42,9 +51,25 @@ public final class ProfileRegistry implements FqListener {
         p.record(s.stats());
     }
 
+    /** Per-endpoint profiles, each with its findings. */
     public List<Map<String, Object>> profiles() {
         List<Map<String, Object>> out = new ArrayList<>();
-        endpoints.values().stream().sorted(Comparator.comparing(e -> e.name)).forEach(e -> out.add(e.toJson()));
+        endpoints.values().stream().sorted(Comparator.comparing(e -> e.name)).forEach(e -> {
+            Map<String, Object> p = e.toJson();
+            p.put("findings", Findings.of(p, nPlusOneThreshold));
+            out.add(p);
+        });
+        return out;
+    }
+
+    /** Every finding of every endpoint, most severe first. */
+    @SuppressWarnings("unchecked")
+    public List<Map<String, Object>> findings() {
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Map<String, Object> p : profiles()) {
+            out.addAll((List<Map<String, Object>>) p.get("findings"));
+        }
+        out.sort(Comparator.comparingInt(f -> Findings.SEVERITY_RANK.get((String) f.get("severity"))));
         return out;
     }
 
@@ -156,6 +181,7 @@ public final class ProfileRegistry implements FqListener {
                             x.put("fetchExplicit", a.fetchExplicit());
                         }
                         if (a.large()) x.put("large", true);
+                        if (a.targetType() != null) x.put("target", a.targetType());
                         x.put("readRatio", Math.round(reads[a.index()] * 100.0 / v[2]) / 100.0);
                         attrs.add(x);
                         if (reads[a.index()] == 0 && a.kind() != EntityModel.Kind.ID) unread.add(a.name());

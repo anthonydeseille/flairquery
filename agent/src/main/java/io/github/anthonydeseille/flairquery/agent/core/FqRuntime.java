@@ -38,13 +38,14 @@ public final class FqRuntime implements FqHooks {
     private final SqlNormalizer normalizer = new SqlNormalizer();
     private final Registry registry;
     private final List<FqListener> listeners = new CopyOnWriteArrayList<>();
-    private final ProfileRegistry profiles = new ProfileRegistry();
+    private final ProfileRegistry profiles;
 
     public FqRuntime(FqConfig config) {
         this.config = config;
         this.callerResolver = new CallerResolver(config.basePackages());
         this.registry = new Registry(config.appName(), config.nPlusOneThreshold());
         this.listeners.add(registry);
+        this.profiles = new ProfileRegistry(config.nPlusOneThreshold());
         if (config.profile()) {
             this.listeners.add(profiles);
         }
