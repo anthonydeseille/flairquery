@@ -132,3 +132,13 @@ else
 endif
 	-docker image rm $(IMAGES) 2>/dev/null
 	rm -rf $(DOCKER_CTX)
+
+# ---------------------------------------------------------------- K9s plugin
+K9S_PLUGINS ?= $(shell k9s info 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | sed -n 's/^Plugins: *//p')
+.PHONY: k9s-plugin
+k9s-plugin: ## Install the K9s plugins (Shift-Q top SQL, Shift-W N+1, Shift-E endpoints) on the pods view
+	@test -n "$(K9S_PLUGINS)" || { echo "k9s not found (k9s info)"; exit 1; }
+	@mkdir -p "$$(dirname "$(K9S_PLUGINS)")"
+	@if [ -f "$(K9S_PLUGINS)" ] && ! grep -q 'flairquery-top' "$(K9S_PLUGINS)"; then echo "$(K9S_PLUGINS) already exists: add the entries of k9s/plugins.yaml to it, replacing __FQ_VIEW__ by $(CURDIR)/k9s/fq-view.sh"; exit 1; fi
+	sed 's#__FQ_VIEW__#$(CURDIR)/k9s/fq-view.sh#g' k9s/plugins.yaml > "$(K9S_PLUGINS)"
+	@echo "installed: $(K9S_PLUGINS)"

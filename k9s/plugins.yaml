@@ -1,0 +1,40 @@
+# FlairQuery K9s plugins (pods scope). Install with `make k9s-plugin` (replaces __FQ_VIEW__ with the
+# absolute path of k9s/fq-view.sh) or copy this block into your existing plugins.yaml.
+#   Shift-Q : top SQL statements of the selected pod (/fq/top)
+#   Shift-W : N+1 warnings of the selected pod (/fq/nplusone)
+#   Shift-E : per-endpoint summary (/fq/endpoints)
+# (Shift-T and Shift-N are already bound by K9s in the pods view: sort by restarts / name.)
+plugins:
+  flairquery-top:
+    shortCut: Shift-Q
+    description: FlairQuery top SQL
+    scopes:
+      - pods
+    command: bash
+    background: false
+    confirm: false
+    args:
+      - -c
+      - '"__FQ_VIEW__" top "$NAME" "$NAMESPACE" "$CONTEXT"'
+  flairquery-nplusone:
+    shortCut: Shift-W
+    description: FlairQuery N+1
+    scopes:
+      - pods
+    command: bash
+    background: false
+    confirm: false
+    args:
+      - -c
+      - '"__FQ_VIEW__" nplusone "$NAME" "$NAMESPACE" "$CONTEXT"'
+  flairquery-endpoints:
+    shortCut: Shift-E
+    description: FlairQuery endpoints
+    scopes:
+      - pods
+    command: bash
+    background: false
+    confirm: false
+    args:
+      - -c
+      - '"__FQ_VIEW__" endpoints "$NAME" "$NAMESPACE" "$CONTEXT"'

@@ -50,9 +50,9 @@ operator: see [docs/ROADMAP.md](docs/ROADMAP.md).
 | Demo app + traps | Spring Boot 3.5, Hibernate 6.6, 7 traps + 1 witness ([TRAPS.md](demo-app/TRAPS.md)) | ✅ |
 | Corpus S and M | Deterministic generator, streamed `COPY`, Open Library extract | ✅ |
 | Integration tests | Testcontainers + the real agent jar, GitHub Actions CI | ✅ |
-| Overhead | p50/p99 latency with and without the agent | ✅ (local) |
-| kind + Kustomize deployment | `dev` / `e2e` overlays, injection through an initContainer | ⏳ upcoming |
-| K9s plugin | `/fq/top` and `/fq/nplusone` from K9s | ⏳ upcoming |
+| Overhead | p50/p99 latency and startup time with and without the agent | ✅ |
+| kind + Kustomize deployment | `dev` / `e2e` / `pool-overflow` overlays, injection through an initContainer | ✅ |
+| K9s plugin | `/fq/top`, `/fq/nplusone`, `/fq/endpoints` from K9s | ✅ |
 | kind E2E + E2E CI | `make e2e`, ephemeral `fq-e2e` namespace | ⏳ upcoming |
 
 ## Repository layout
@@ -63,7 +63,8 @@ flairquery/
 ├── demo-app/       flairquery-demo-app: target Spring Boot app, traps documented in TRAPS.md
 ├── it/             flairquery-it: integration tests (Testcontainers + real agent)
 ├── corpus/         data generator (Python stdlib), COPY loading, Open Library extract
-├── deploy/         instrumented PostgreSQL (config + init), local Docker Compose environment
+├── deploy/         PostgreSQL config, local Compose, kind config, images, Kustomize (k8s/)
+├── k9s/            K9s plugin (plugins.yaml) and its view script (fq-view.sh)
 ├── scripts/        traffic (traffic.sh), overhead measurement (bench.sh)
 ├── docs/ROADMAP.md phases 2 to 7 (design guide)
 └── Makefile        entry point (make help)
@@ -115,7 +116,7 @@ Without changing the command line (containers):
 export JAVA_TOOL_OPTIONS="-javaagent:/fq/agent.jar"
 ```
 
-On Kubernetes, an initContainer will copy the jar into an `emptyDir` mounted at `/fq` (upcoming step).
+On Kubernetes, an initContainer copies the jar into an `emptyDir` mounted at `/fq` (see [Kubernetes](#kubernetes-kind-and-k9s-plugin)).
 In phase 7, an admission webhook will do the injection.
 
 Instrumentation points:
@@ -352,17 +353,129 @@ on kind will come with the e2e step.
 
 ## Kubernetes (kind) and K9s plugin
 
-⏳ **Upcoming** (next phase 1 steps):
+### Requirements
 
-- `make cluster build deploy seed load` on **kind**. PostgreSQL 16 with `pg_stat_statements` and
-  `auto_explain`, demo app with the agent injected by an initContainer (`emptyDir` + `JAVA_TOOL_OPTIONS`),
-  Prometheus annotations. CPU/memory requests and limits deliberately mis-sized, plus an overlay where
-  Hikari pool × replicas > `max_connections`. Kustomize overlays `dev` (`fq-dev`, persistent) and `e2e`
-  (`fq-e2e`, ephemeral).
-- `make e2e`: deployment, corpus, traffic, assertions, guaranteed namespace deletion.
-- `k9s/plugins.yaml`: `Shift-T` for `/fq/top`, `Shift-N` for `/fq/nplusone` on the selected pod.
+Docker with **at least 4 CPUs and 6 GB of RAM** for the VM (`colima start --cpu 4 --memory 6`), `jq`,
+Python 3. `kind` and `kubectl` can come from your package manager, or be dropped into `.tools/bin/`
+(official release binaries); the Makefile uses `.tools/bin` first. Every `kubectl` call of the Makefile
+is pinned to the `kind-flairquery` context, never to your current context.
 
-Requirements: `brew install kind kubectl`.
+### Deploy
+
+```bash
+make cluster                 # kind cluster "flairquery" (CLUSTER_TOOL=k3d also supported)
+make build                   # jars + images (agent, demo-app, tools) loaded into the cluster
+make deploy                  # OVERLAY=dev (default) | e2e | pool-overflow, waits for readiness
+make seed PROFILE=M          # corpus Job (COPY); FORCE=1 to reload
+make load ROUNDS=5           # traffic Job on every demo endpoint
+make status                  # pods, services, PVC, jobs
+make undeploy                # deletes the namespace (and its data)
+make clean                   # deletes the cluster and the FlairQuery images
+```
+
+| Overlay | Namespace | Storage | Purpose |
+|---|---|---|---|
+| `dev` | `fq-dev` | PVC (persistent) | manual testing with K9s |
+| `e2e` | `fq-e2e` | `emptyDir` (ephemeral) | `make e2e` |
+| `pool-overflow` | `fq-dev` | PVC | phase 6 target: 3 replicas × Hikari 20 = 60 > `max_connections` 50 (needs ~1.5 GB more RAM) |
+
+What gets deployed (`deploy/k8s/base`), every object labelled `app.kubernetes.io/part-of: flairquery`:
+
+- **PostgreSQL 16** with `pg_stat_statements` and `auto_explain` preloaded (`log_min_duration = 0`), same
+  configuration as the local Compose environment (`deploy/postgres`). `shared_buffers=32MB`,
+  `work_mem=64kB` and `max_connections=50` are deliberately small (phase 6 targets).
+- **Demo app** whose image knows nothing about FlairQuery. The agent is injected at deploy time: the
+  `fq-agent` initContainer copies the jar into an `emptyDir` mounted at `/fq`, and
+  `JAVA_TOOL_OPTIONS=-javaagent:/fq/agent.jar` loads it (phase 7 replaces this with an admission webhook).
+  Prometheus annotations: `prometheus.io/scrape: "true"`, `prometheus.io/port: "9464"`,
+  `prometheus.io/path: /metrics`.
+- **Deliberately mis-sized resources** (phase 6 targets): requests far below real usage (`25m` /
+  `64Mi`), tight CPU limit (`500m`, slow startup through throttling), `MaxRAMPercentage=80` too high
+  for a `768Mi` limit.
+- **Jobs** (`deploy/k8s/jobs`): `fq-seed` (corpus through `COPY`, waits for the Liquibase schema) and
+  `fq-load` (traffic), both on the `flairquery/tools` image.
+
+### K9s plugin
+
+```bash
+make k9s-plugin     # writes the K9s plugins.yaml (refuses to overwrite a non-FlairQuery file)
+k9s --context kind-flairquery -n fq-dev
+```
+
+On the **pods** view, select the demo app pod:
+
+| Shortcut | View |
+|---|---|
+| `Shift-Q` | top SQL statements by total time (`/fq/top`): endpoint, caller, calls, timings |
+| `Shift-W` | N+1 warnings (`/fq/nplusone`): endpoint, caller, queries per request |
+| `Shift-E` | per-endpoint summary (`/fq/endpoints`) |
+
+(`Shift-T` and `Shift-N` are already bound by K9s in the pods view: sort by restarts and by name.)
+
+The plugin runs `k9s/fq-view.sh`, which opens a temporary `kubectl port-forward` to the agent port (no
+`curl` needed in the application image), renders the JSON with `jq`, pages it with `less` (`q` to go
+back to K9s) and always closes the port-forward. The script also works on its own:
+
+```bash
+k9s/fq-view.sh nplusone <pod> fq-dev kind-flairquery
+```
+
+If you already have a `plugins.yaml`, copy the three entries of `k9s/plugins.yaml` into it and replace
+`__FQ_VIEW__` with the absolute path of `k9s/fq-view.sh`.
+
+Real output on fq-dev, profile M, after `make load ROUNDS=2`. `Shift-W`:
+
+```
+FlairQuery - N+1 detected (threshold: more than 5 identical statements per request)    app=demo-app
+
+* GET /authors/with-books   up to 4904 queries/request   seen in 2 requests   11572 ms total
+    caller: io.github.anthonydeseille.flairquery.demo.service.AuthorService#withBooks:28
+    sql:    select p1_0.id,p1_0.country,p1_0.name from publisher p1_0 where p1_0.id=?
+
+* GET /books/titles   up to 3084 queries/request   seen in 2 requests   8286 ms total
+    caller: io.github.anthonydeseille.flairquery.demo.service.BookService#titlesOfAuthor:29
+    sql:    select p1_0.id,p1_0.country,p1_0.name from publisher p1_0 where p1_0.id=?
+
+* GET /books   up to 49 queries/request   seen in 2 requests   231 ms total
+    caller: io.github.anthonydeseille.flairquery.demo.service.BookService#firstBooks:23
+    sql:    select p1_0.id,p1_0.country,p1_0.name from publisher p1_0 where p1_0.id=?
+
+* GET /authors   up to 20 queries/request   seen in 2 requests   245 ms total
+    caller: io.github.anthonydeseille.flairquery.demo.web.AuthorController#toDto:47
+    sql:    select b1_0.author_id,b1_0.id,b1_0.description,b1_0.isbn,b1_0.publication_year,p1_0.id,...
+```
+
+`Shift-E`:
+
+```
+REQUESTS  SQL/REQ   MAX  SQL ms     N+1  ENDPOINT
+2         1         1    33407      0    GET /reviews/ranking
+2         4906      4906 13023      2    GET /authors/with-books
+2         3085      3085 8417       2    GET /books/titles
+2         1         1    2437       0    GET /reviews/search
+2         22        22   316        2    GET /authors
+2         50        50   234        2    GET /books
+2         1         1    1          0    GET /publishers/{id}
+```
+
+The witness (`GET /publishers/{id}`) stays at one query and is never flagged. The EAGER publisher (trap 2)
+becomes a 4,900-query N+1 on `/authors/with-books` once the data is realistic.
+
+### Agent startup overhead
+
+ByteBuddy has to decide, for every class loaded by the application (~15,000 for the demo app), whether it
+is a servlet or a JDBC implementation. Measured on kind with the demo app's `500m` CPU limit:
+
+| Version | Without agent | With agent | Overhead |
+|---|---|---|---|
+| first implementation | 46.7 s | 69.9 s | +23 s (+50 %) |
+| + type-pool cache | 47.3 s | 59.4 s | +12 s (+26 %) |
+| + skip packages that cannot contain a target | 48.3 s | 54.5 s | **+6 s (+13 %)** |
+
+Skipped packages: Spring (except `org.springframework.web` and `.jdbc`), Hibernate, Liquibase, Jackson,
+logging, Tomcat internals, Kotlin… JDBC drivers, connection pools (HikariCP, commons-dbcp2, c3p0,
+tomcat-jdbc) and `HttpServlet` are never skipped (guarded by a unit test). The type cache is cleared
+every minute so that it never grows with the application's lifetime.
 
 ## Fail-safe guarantees
 

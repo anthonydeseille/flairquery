@@ -16,7 +16,7 @@ python3 corpus/generate.py --profile S --expect   # expected facts (tests)
 | Profile | Usage | publisher | author | book | review | Total | Disk size | Load time (local, colima) |
 |---|---|---|---|---|---|---|---|---|
 | **S** | Testcontainers, CI | 500 | 5,000 | 23,485 | 70,000 | ~99k rows | **41 MB** | ~15 s |
-| **M** | fq-dev, kind e2e | 5,000 | 200,000 | 440,167 | 3,000,000 | ~3.65M rows | **1.25 GB** | 5 to 8 min |
+| **M** | fq-dev, kind e2e | 5,000 | 200,000 | 440,167 | 3,000,000 | ~3.65M rows | **1.25 GB** | 5 to 8 min (local), 170 s (kind Job) |
 | M + Open Library | fq-dev | + extract | + extract | + extract | + extract | | + a few MB | + a few s |
 | **L** | out of phase 1 | — | — | — | — | tens of millions | — | extension point only (`generate.py` fails explicitly) |
 
