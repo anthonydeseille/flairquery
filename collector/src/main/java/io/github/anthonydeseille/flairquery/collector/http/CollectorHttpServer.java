@@ -51,6 +51,20 @@ public final class CollectorHttpServer {
             Store.Order order = Store.Order.valueOf(q.getOrDefault("order", "time").toUpperCase(Locale.ROOT));
             return body(q, "queries", store.topStatements(collector.target(), since, limit, order));
         }));
+        server.createContext("/fq/collector/endpoints", ex -> handle(ex, q ->
+                body(q, "endpoints", store.endpoints(collector.target(), since(q),
+                        Math.min(50, Integer.parseInt(q.getOrDefault("statements", "5")))))));
+        server.createContext("/fq/collector/plans", ex -> handle(ex, q -> {
+            String id = q.get("queryid");
+            if (id == null) throw new IllegalArgumentException("queryid is required");
+            long queryid;
+            try {
+                queryid = Long.parseLong(id);
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException("queryid must be a number");
+            }
+            return body(q, "plans", store.plans(collector.target(), queryid));
+        }));
         server.createContext("/fq/collector/tables", ex -> handle(ex, q ->
                 body(q, "tables", store.tableActivity(collector.target(), since(q)))));
         server.createContext("/fq/collector/snapshots", ex -> handle(ex, q ->
@@ -116,7 +130,10 @@ public final class CollectorHttpServer {
               .append("# HELP fq_collector_last_success_seconds Unix time of the last successful cycle\n")
               .append("# TYPE fq_collector_last_success_seconds gauge\n")
               .append("fq_collector_last_success_seconds{target=\"").append(t).append("\"} ")
-              .append(collector.lastSuccess() == null ? 0 : collector.lastSuccess().getEpochSecond()).append('\n');
+              .append(collector.lastSuccess() == null ? 0 : collector.lastSuccess().getEpochSecond()).append('\n')
+              .append("# HELP fq_collector_log_lag_bytes Bytes of server log not read yet\n")
+              .append("# TYPE fq_collector_log_lag_bytes gauge\n")
+              .append("fq_collector_log_lag_bytes{target=\"").append(t).append("\"} ").append(collector.logLag()).append('\n');
             send(ex, 200, "text/plain; version=0.0.4; charset=utf-8", sb.toString().getBytes(StandardCharsets.UTF_8));
         } catch (Exception e) {
             Log.warn("metrics failed", e);

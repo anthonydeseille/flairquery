@@ -363,14 +363,25 @@ snapshots and stores them in **its own database** (`fq-store`), never in the obs
 - The first cycle is a baseline (no delta). A statement seen for the first time, an evicted and re-created
   entry, or a global `pg_stat_statements_reset()` never produces negative or invented values.
 - The collector's own statements are excluded, its read transactions are read-only and always closed.
-- Endpoint and caller currently come from the `pg_stat_statements` text (first tag seen). The exact
-  per-execution mapping through `auto_explain` comes with the next step.
+- **Exact attribution through `auto_explain`.** `pg_stat_statements` keeps one text (one tag) per
+  `queryid`. The JSON server log, however, has one `auto_explain` entry per execution, each with its
+  `query_id` **and its own `fq:` tag**. The collector reads it incrementally through SQL
+  (`pg_ls_logdir`, `pg_read_binary_file`, read-only), so a statement run by three endpoints is split into
+  three attributions with their execution counts. `attributionSource` says where endpoint/caller come from
+  (`auto_explain`, or `pg_stat_statements` when the statement was not logged).
+- **Plans**: distinct plan shapes per statement (fingerprint of the node tree, costs ignored) with a summary
+  of sequential scans and their filters, sorts and limits.
+- The first cycle skips the existing log content (consistent with the statistics baseline); a bounded
+  amount of log is read per cycle (`FQ_COLLECTOR_LOG_MAX_MB`), the backlog is exposed as
+  `fq_collector_log_lag_bytes`.
 
 ```bash
 make demo-local              # terminal 1: PostgreSQL + fq-store (Compose) + demo app with the agent
 make collector-local         # terminal 2: collector on the host (INTERVAL=10 for a 10 s cycle)
 make traffic-local           # terminal 3, then:
 curl -s 'localhost:9465/fq/collector/queries?window=15m&order=time&limit=10' | jq
+curl -s 'localhost:9465/fq/collector/endpoints?window=15m' | jq      # exact, per endpoint
+curl -s 'localhost:9465/fq/collector/plans?queryid=<queryid>' | jq    # plan shapes of one statement
 curl -s 'localhost:9465/fq/collector/tables?window=15m' | jq
 curl -s 'localhost:9465/fq/collector/snapshots' | jq
 ```
@@ -389,6 +400,8 @@ configuration) — `make collector-local` re-applies the `fq_reader` grants itse
 | `FQ_COLLECTOR_INTERVAL` | `30` | seconds between cycles |
 | `FQ_COLLECTOR_RETENTION_HOURS` | `72` | snapshots older than this are purged |
 | `FQ_COLLECTOR_HTTP_PORT` | `9465` | HTTP API and `/metrics` |
+| `FQ_COLLECTOR_PLANS` | `true` | read auto_explain plans from the JSON server log |
+| `FQ_COLLECTOR_LOG_MAX_MB` | `64` | maximum log read per cycle (the rest is read next cycle) |
 
 ## Kubernetes (kind) and K9s plugin
 

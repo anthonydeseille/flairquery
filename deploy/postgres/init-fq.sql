@@ -13,6 +13,8 @@ END $$;
 GRANT pg_monitor TO fq_reader;
 -- server log files (log_directory only: absolute paths and files outside the data directory are refused)
 GRANT EXECUTE ON FUNCTION pg_read_file(text, bigint, bigint) TO fq_reader;
+-- binary variant: incremental reads may cut a multi-byte character, the collector splits on line ends
+GRANT EXECUTE ON FUNCTION pg_read_binary_file(text, bigint, bigint) TO fq_reader;
 GRANT EXECUTE ON FUNCTION pg_stat_file(text) TO fq_reader;
 GRANT CONNECT ON DATABASE flairquery TO fq_reader;
 

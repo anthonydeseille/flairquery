@@ -3,6 +3,7 @@ package io.github.anthonydeseille.flairquery.collector;
 import io.github.anthonydeseille.flairquery.collector.config.Target;
 import io.github.anthonydeseille.flairquery.collector.http.CollectorHttpServer;
 import io.github.anthonydeseille.flairquery.collector.source.PostgresSource;
+import io.github.anthonydeseille.flairquery.collector.source.SqlLogPlanSource;
 import io.github.anthonydeseille.flairquery.collector.store.Store;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -67,11 +68,12 @@ class CollectorIT {
     @BeforeEach
     void freshStoreAndStats() throws Exception {
         try (Connection c = store.connect(); Statement st = c.createStatement()) {
-            st.execute("TRUNCATE fq_snapshot, fq_statement, fq_table CASCADE");
+            st.execute("TRUNCATE fq_snapshot, fq_statement, fq_table, fq_plan, fq_log_cursor CASCADE");
         }
         app("SELECT pg_stat_statements_reset()");
         Thread.sleep(50);
-        collector = new Collector(new PostgresSource(new Target("it", observed.getJdbcUrl(), "fq_reader", "fq_reader")),
+        Target target = new Target("it", observed.getJdbcUrl(), "fq_reader", "fq_reader");
+        collector = new Collector(new PostgresSource(target), new SqlLogPlanSource(target, 64L * 1024 * 1024),
                 store, Duration.ofHours(72), Clock.systemUTC());
     }
 
@@ -160,9 +162,70 @@ class CollectorIT {
     }
 
     @Test
+    void autoExplainSplitsOneQueryidAcrossTheEndpointsThatReallyRanIt() throws Exception {
+        String sql = "SELECT name FROM author WHERE id = ?";
+        String tagA = "/* fq:app=demo,endpoint=GET /books,caller=com.x.BookService#firstBooks:23 */ ";
+        String tagB = "/* fq:app=demo,endpoint=GET /books/titles,caller=com.x.BookService#titlesOfAuthor:29 */ ";
+        collector.collectOnce();                         // baseline: existing log content is skipped
+        run(tagA + sql, 9);
+        run(tagB + sql, 4);
+        Thread.sleep(300);                               // logging collector flush
+        collector.collectOnce();
+
+        Map<String, Object> row = authorLookup();
+        // pg_stat_statements: ONE entry (same queryid), whose text holds only the first tag seen
+        assertThat(row).containsEntry("calls", 13L).containsEntry("attributionSource", "auto_explain");
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> attribution = (List<Map<String, Object>>) row.get("attribution");
+        assertThat(attribution).extracting(a -> a.get("endpoint"), a -> a.get("executions"))
+                .containsExactly(org.assertj.core.groups.Tuple.tuple("GET /books", 9L),
+                        org.assertj.core.groups.Tuple.tuple("GET /books/titles", 4L));
+        assertThat(attribution.get(1).get("caller")).isEqualTo("com.x.BookService#titlesOfAuthor:29");
+
+        // per-endpoint view, exact
+        Map<String, Object> titles = store.endpoints("it", Instant.EPOCH, 5).stream()
+                .filter(e -> "GET /books/titles".equals(e.get("endpoint"))).findFirst().orElseThrow();
+        assertThat(titles).containsEntry("executions", 4L);
+
+        // a second cycle does not count the same log lines twice
+        collector.collectOnce();
+        assertThat(store.endpoints("it", Instant.EPOCH, 5).stream()
+                .filter(e -> "GET /books".equals(e.get("endpoint"))).findFirst().orElseThrow())
+                .containsEntry("executions", 9L);
+    }
+
+    @Test
+    void plansShowTheSequentialScanAndItsFilter() throws Exception {
+        collector.collectOnce();
+        app(TAG + "SELECT count(*) FROM author WHERE name = 'a42'");
+        Thread.sleep(300);
+        collector.collectOnce();
+
+        String queryid = store.topStatements("it", Instant.EPOCH, 50, Store.Order.CALLS).stream()
+                .filter(r -> String.valueOf(r.get("sql")).contains("WHERE name = $1"))
+                .map(r -> (String) r.get("queryid")).findFirst().orElseThrow();
+        List<Map<String, Object>> plans = store.plans("it", Long.parseLong(queryid));
+        assertThat(plans).hasSize(1);
+        String summary = plans.get(0).get("summary").toString();
+        assertThat(summary).contains("\"relation\":\"author\"", "name");
+    }
+
+    static void run(String sql, int times) throws Exception {
+        try (Connection c = DriverManager.getConnection(observed.getJdbcUrl(), "flairquery", "flairquery")) {
+            for (int i = 0; i < times; i++) {
+                try (var ps = c.prepareStatement(sql)) {
+                    ps.setLong(1, i + 1);
+                    ps.executeQuery().close();
+                }
+            }
+        }
+    }
+
+    @Test
     void httpApi() throws Exception {
         collector.collectOnce();
         tagged(6);
+        Thread.sleep(300);
         collector.collectOnce();
         CollectorHttpServer http = new CollectorHttpServer(collector, store);
         int port = http.start(0);
@@ -174,6 +237,10 @@ class CollectorIT {
                     + "/fq/collector/snapshots")).build(), HttpResponse.BodyHandlers.ofString()).body();
             HttpResponse<String> bad = client.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port
                     + "/fq/collector/queries?window=forever")).build(), HttpResponse.BodyHandlers.ofString());
+            String endpoints = client.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port
+                    + "/fq/collector/endpoints?window=1h")).build(), HttpResponse.BodyHandlers.ofString()).body();
+            HttpResponse<String> noQueryid = client.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port
+                    + "/fq/collector/plans")).build(), HttpResponse.BodyHandlers.ofString());
             String metrics = client.send(HttpRequest.newBuilder(URI.create("http://localhost:" + port
                     + "/metrics")).build(), HttpResponse.BodyHandlers.ofString()).body();
 
@@ -181,7 +248,9 @@ class CollectorIT {
                     .contains("\"endpoint\":\"GET /authors\"", "\"calls\":6");
             assertThat(snapshots).contains("\"baseline\":true", "\"baseline\":false");
             assertThat(bad.statusCode()).isEqualTo(400);
-            assertThat(metrics).contains("fq_collector_cycles{target=\"it\"} 2");
+            assertThat(metrics).contains("fq_collector_cycles{target=\"it\"} 2", "fq_collector_log_lag_bytes");
+            assertThat(endpoints).contains("\"endpoint\":\"GET /authors\"", "\"executions\":6");
+            assertThat(noQueryid.statusCode()).isEqualTo(400);
         } finally {
             http.stop();
         }

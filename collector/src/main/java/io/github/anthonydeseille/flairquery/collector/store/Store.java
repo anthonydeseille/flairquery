@@ -2,6 +2,8 @@ package io.github.anthonydeseille.flairquery.collector.store;
 
 import io.github.anthonydeseille.flairquery.collector.delta.Counters;
 import io.github.anthonydeseille.flairquery.collector.delta.DeltaCalculator.Delta;
+import io.github.anthonydeseille.flairquery.collector.plan.Attribution;
+import io.github.anthonydeseille.flairquery.collector.source.LogCursor;
 import io.github.anthonydeseille.flairquery.collector.source.StatementKey;
 import io.github.anthonydeseille.flairquery.collector.source.StatementRow;
 import io.github.anthonydeseille.flairquery.collector.source.TableRow;
@@ -32,6 +34,8 @@ import java.util.logging.Logger;
 
 /** The collector's own database (fq-store). Every cycle is written in a single transaction. */
 public final class Store {
+
+    private static final com.fasterxml.jackson.databind.ObjectMapper JSON = new com.fasterxml.jackson.databind.ObjectMapper();
 
     private final String url;
     private final String user;
@@ -67,7 +71,8 @@ public final class Store {
 
     public record TableKey(String dbName, long relid) { }
 
-    public record State(Optional<SnapshotInfo> last, Map<StatementKey, Cursor> statements, Map<TableKey, Cursor> tables) { }
+    public record State(Optional<SnapshotInfo> last, Map<StatementKey, Cursor> statements, Map<TableKey, Cursor> tables,
+                        Map<String, LogCursor> logCursors) { }
 
     public State loadState(String target) throws SQLException {
         try (Connection c = connect()) {
@@ -112,7 +117,17 @@ public final class Store {
                     }
                 }
             }
-            return new State(last, statements, tables);
+            Map<String, LogCursor> logCursors = new HashMap<>();
+            try (PreparedStatement ps = c.prepareStatement(
+                    "SELECT file_name, read_offset, head FROM fq_log_cursor WHERE target = ?")) {
+                ps.setString(1, target);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        logCursors.put(rs.getString(1), new LogCursor(rs.getString(1), rs.getLong(2), rs.getString(3)));
+                    }
+                }
+            }
+            return new State(last, statements, tables, logCursors);
         }
     }
 
@@ -124,7 +139,9 @@ public final class Store {
 
     public record Cycle(String target, Instant takenAt, Instant previousAt, boolean baseline, Instant statsReset,
                         boolean statsResetSeen, long deallocTotal, long deallocDelta, int statementCount,
-                        double durationMs, List<StatementChange> statements, List<TableChange> tables) { }
+                        double durationMs, List<StatementChange> statements, List<TableChange> tables,
+                        Attribution.Result attribution, Map<String, LogCursor> logCursors, int logEntries,
+                        long logLagBytes, int logUnparsable) { }
 
     public long save(Cycle cycle) throws SQLException {
         try (Connection c = connect()) {
@@ -149,6 +166,11 @@ public final class Store {
                         upsertTableCursor(c, tableId, ch.row().counters());
                     }
                 }
+                if (!cycle.baseline()) {
+                    insertAttributions(c, snapshotId, cycle.attribution());
+                }
+                upsertPlans(c, cycle.target(), cycle.takenAt(), cycle.attribution());
+                upsertLogCursors(c, cycle.target(), cycle.takenAt(), cycle.logCursors());
                 c.commit();
                 return snapshotId;
             } catch (SQLException | RuntimeException e) {
@@ -161,8 +183,9 @@ public final class Store {
     private static long insertSnapshot(Connection c, Cycle cy) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement("""
                 INSERT INTO fq_snapshot (target, taken_at, previous_at, baseline, stats_reset, stats_reset_seen,
-                                         dealloc_total, dealloc_delta, statements, duration_ms)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id""")) {
+                                         dealloc_total, dealloc_delta, statements, duration_ms,
+                                         log_entries, log_lag_bytes, log_unparsable)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id""")) {
             ps.setString(1, cy.target());
             ps.setTimestamp(2, Timestamp.from(cy.takenAt()));
             setInstant(ps, 3, cy.previousAt());
@@ -173,6 +196,9 @@ public final class Store {
             ps.setLong(8, cy.deallocDelta());
             ps.setInt(9, cy.statementCount());
             ps.setDouble(10, cy.durationMs());
+            ps.setInt(11, cy.logEntries());
+            ps.setLong(12, cy.logLagBytes());
+            ps.setInt(13, cy.logUnparsable());
             try (ResultSet rs = ps.executeQuery()) {
                 rs.next();
                 return rs.getLong(1);
@@ -300,6 +326,71 @@ public final class Store {
         }
     }
 
+    private static void insertAttributions(Connection c, long snapshotId, Attribution.Result r) throws SQLException {
+        if (r == null || r.executions().isEmpty()) return;
+        try (PreparedStatement ps = c.prepareStatement("""
+                INSERT INTO fq_attribution (snapshot_id, db_name, role_name, queryid, app, endpoint, caller,
+                                            executions, total_ms, max_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""")) {
+            for (Map.Entry<Attribution.Key, Attribution.Executions> e : r.executions().entrySet()) {
+                Attribution.Key k = e.getKey();
+                ps.setLong(1, snapshotId);
+                ps.setString(2, k.dbName());
+                ps.setString(3, k.roleName());
+                ps.setLong(4, k.queryId());
+                ps.setString(5, k.app());
+                ps.setString(6, k.endpoint());
+                ps.setString(7, k.caller());
+                ps.setLong(8, e.getValue().count);
+                ps.setDouble(9, e.getValue().totalMs);
+                ps.setDouble(10, e.getValue().maxMs);
+                ps.addBatch();
+            }
+            ps.executeBatch();
+        }
+    }
+
+    private static void upsertPlans(Connection c, String target, Instant now, Attribution.Result r) throws SQLException {
+        if (r == null || r.plans().isEmpty()) return;
+        try (PreparedStatement ps = c.prepareStatement("""
+                INSERT INTO fq_plan (target, db_name, queryid, fingerprint, summary, plan, executions, first_seen, last_seen)
+                VALUES (?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, ?, ?)
+                ON CONFLICT (target, db_name, queryid, fingerprint) DO UPDATE
+                   SET executions = fq_plan.executions + excluded.executions, last_seen = excluded.last_seen""")) {
+            for (Map.Entry<Attribution.PlanKey, Attribution.PlanObservation> e : r.plans().entrySet()) {
+                ps.setString(1, target);
+                ps.setString(2, e.getKey().dbName());
+                ps.setLong(3, e.getKey().queryId());
+                ps.setString(4, e.getKey().fingerprint());
+                ps.setString(5, e.getValue().summary.toString());
+                ps.setString(6, e.getValue().plan.toString());
+                ps.setLong(7, e.getValue().count);
+                ps.setTimestamp(8, Timestamp.from(now));
+                ps.setTimestamp(9, Timestamp.from(now));
+                ps.addBatch();
+            }
+            ps.executeBatch();
+        }
+    }
+
+    private static void upsertLogCursors(Connection c, String target, Instant now, Map<String, LogCursor> cursors)
+            throws SQLException {
+        if (cursors == null || cursors.isEmpty()) return;
+        try (PreparedStatement ps = c.prepareStatement("""
+                INSERT INTO fq_log_cursor (target, file_name, read_offset, head, updated_at) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (target, file_name) DO UPDATE
+                   SET read_offset = excluded.read_offset, head = excluded.head, updated_at = excluded.updated_at""")) {
+            for (LogCursor lc : cursors.values()) {
+                ps.setString(1, target);
+                ps.setString(2, lc.fileName());
+                ps.setLong(3, lc.offset());
+                ps.setString(4, lc.head());
+                ps.setTimestamp(5, Timestamp.from(now));
+                ps.addBatch();
+            }
+            ps.executeBatch();
+        }
+    }
+
     /** Retention: snapshots (and their deltas, by cascade) older than the cutoff. */
     public int deleteSnapshotsBefore(String target, Instant cutoff) throws SQLException {
         try (Connection c = connect();
@@ -324,7 +415,7 @@ public final class Store {
 
     public List<Map<String, Object>> topStatements(String target, Instant since, int limit, Order order) throws SQLException {
         String sql = """
-                SELECT s.queryid, s.app, s.endpoint, s.caller, s.role_name, s.db_name, s.query,
+                SELECT s.id, s.queryid, s.app, s.endpoint, s.caller, s.role_name, s.db_name, s.query,
                        sum(d.calls) AS calls, sum(d.total_exec_time) AS total_exec_time,
                        sum(d.total_exec_time) / nullif(sum(d.calls), 0) AS mean_exec_time,
                        max(d.max_exec_time) AS max_exec_time, sum(d.rows) AS rows,
@@ -361,8 +452,133 @@ public final class Store {
                     m.put("sharedBlksRead", rs.getLong("shared_blks_read"));
                     m.put("tempBlksWritten", rs.getLong("temp_blks_written"));
                     m.put("countersRestarted", rs.getBoolean("restarted"));
+                    List<Map<String, Object>> attribution = attribution(c, target, since,
+                            rs.getString("db_name"), rs.getString("role_name"), rs.getLong("queryid"));
+                    if (!attribution.isEmpty()) {
+                        // exact: every auto_explain entry carries its own tag
+                        m.put("app", attribution.get(0).get("app"));
+                        m.put("endpoint", attribution.get(0).get("endpoint"));
+                        m.put("caller", attribution.get(0).get("caller"));
+                        m.put("attributionSource", "auto_explain");
+                    } else {
+                        m.put("attributionSource", m.get("endpoint") == null ? "none" : "pg_stat_statements");
+                    }
+                    m.put("attribution", attribution);
                     out.add(m);
                 }
+            }
+            return out;
+        }
+    }
+
+    private static List<Map<String, Object>> attribution(Connection c, String target, Instant since, String db,
+                                                         String role, long queryid) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("""
+                SELECT a.app, a.endpoint, a.caller, sum(a.executions), sum(a.total_ms), max(a.max_ms)
+                FROM fq_attribution a JOIN fq_snapshot sn ON sn.id = a.snapshot_id
+                WHERE sn.target = ? AND sn.taken_at > ? AND a.db_name = ? AND a.role_name = ? AND a.queryid = ?
+                GROUP BY 1, 2, 3 ORDER BY 4 DESC""")) {
+            ps.setString(1, target);
+            ps.setTimestamp(2, Timestamp.from(since));
+            ps.setString(3, db);
+            ps.setString(4, role);
+            ps.setLong(5, queryid);
+            List<Map<String, Object>> out = new ArrayList<>();
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("app", rs.getString(1));
+                    m.put("endpoint", rs.getString(2));
+                    m.put("caller", rs.getString(3));
+                    m.put("executions", rs.getLong(4));
+                    m.put("loggedTimeMs", round(rs.getDouble(5)));
+                    m.put("maxTimeMs", round(rs.getDouble(6)));
+                    out.add(m);
+                }
+            }
+            return out;
+        }
+    }
+
+    /** Per-endpoint view built from auto_explain attributions (exact per execution). */
+    public List<Map<String, Object>> endpoints(String target, Instant since, int statementsPerEndpoint) throws SQLException {
+        try (Connection c = connect(); PreparedStatement ps = c.prepareStatement("""
+                SELECT a.app, a.endpoint, sum(a.executions), sum(a.total_ms), count(DISTINCT a.queryid)
+                FROM fq_attribution a JOIN fq_snapshot sn ON sn.id = a.snapshot_id
+                WHERE sn.target = ? AND sn.taken_at > ?
+                GROUP BY 1, 2 ORDER BY 4 DESC""")) {
+            ps.setString(1, target);
+            ps.setTimestamp(2, Timestamp.from(since));
+            List<Map<String, Object>> out = new ArrayList<>();
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("app", rs.getString(1));
+                    m.put("endpoint", rs.getString(2));
+                    m.put("executions", rs.getLong(3));
+                    m.put("loggedTimeMs", round(rs.getDouble(4)));
+                    m.put("distinctStatements", rs.getLong(5));
+                    m.put("statements", endpointStatements(c, target, since, rs.getString(1), rs.getString(2),
+                            statementsPerEndpoint));
+                    out.add(m);
+                }
+            }
+            return out;
+        }
+    }
+
+    private static List<Map<String, Object>> endpointStatements(Connection c, String target, Instant since, String app,
+                                                                String endpoint, int limit) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("""
+                SELECT a.queryid, a.caller, sum(a.executions), sum(a.total_ms), max(s.query)
+                FROM fq_attribution a JOIN fq_snapshot sn ON sn.id = a.snapshot_id
+                LEFT JOIN fq_statement s ON s.target = sn.target AND s.db_name = a.db_name AND s.role_name = a.role_name
+                                         AND s.queryid = a.queryid
+                WHERE sn.target = ? AND sn.taken_at > ? AND a.app IS NOT DISTINCT FROM ? AND a.endpoint IS NOT DISTINCT FROM ?
+                GROUP BY 1, 2 ORDER BY 3 DESC LIMIT ?""")) {
+            ps.setString(1, target);
+            ps.setTimestamp(2, Timestamp.from(since));
+            ps.setString(3, app);
+            ps.setString(4, endpoint);
+            ps.setInt(5, limit);
+            List<Map<String, Object>> out = new ArrayList<>();
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("queryid", Long.toString(rs.getLong(1)));
+                    m.put("caller", rs.getString(2));
+                    m.put("executions", rs.getLong(3));
+                    m.put("loggedTimeMs", round(rs.getDouble(4)));
+                    m.put("sql", SqlTag.strip(rs.getString(5)));
+                    out.add(m);
+                }
+            }
+            return out;
+        }
+    }
+
+    /** Distinct plan shapes of one statement (most executed first). */
+    public List<Map<String, Object>> plans(String target, long queryid) throws SQLException {
+        try (Connection c = connect(); PreparedStatement ps = c.prepareStatement("""
+                SELECT db_name, fingerprint, summary::text, plan::text, executions, first_seen, last_seen
+                FROM fq_plan WHERE target = ? AND queryid = ? ORDER BY executions DESC""")) {
+            ps.setString(1, target);
+            ps.setLong(2, queryid);
+            List<Map<String, Object>> out = new ArrayList<>();
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("database", rs.getString(1));
+                    m.put("fingerprint", rs.getString(2));
+                    m.put("summary", JSON.readTree(rs.getString(3)));
+                    m.put("executions", rs.getLong(5));
+                    m.put("firstSeen", rs.getTimestamp(6).toInstant().toString());
+                    m.put("lastSeen", rs.getTimestamp(7).toInstant().toString());
+                    m.put("plan", JSON.readTree(rs.getString(4)));
+                    out.add(m);
+                }
+            } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+                throw new SQLException("invalid stored plan", e);
             }
             return out;
         }
@@ -406,6 +622,7 @@ public final class Store {
     public List<Map<String, Object>> snapshots(String target, int limit) throws SQLException {
         try (Connection c = connect(); PreparedStatement ps = c.prepareStatement("""
                 SELECT id, taken_at, previous_at, baseline, stats_reset_seen, dealloc_delta, statements, duration_ms,
+                       log_entries, log_lag_bytes, log_unparsable,
                        (SELECT count(*) FROM fq_statement_delta d WHERE d.snapshot_id = sn.id) AS active
                 FROM fq_snapshot sn WHERE target = ? ORDER BY taken_at DESC LIMIT ?""")) {
             ps.setString(1, target);
@@ -424,6 +641,9 @@ public final class Store {
                     m.put("statements", rs.getInt("statements"));
                     m.put("activeStatements", rs.getLong("active"));
                     m.put("durationMs", round(rs.getDouble("duration_ms")));
+                    m.put("planEntries", rs.getInt("log_entries"));
+                    m.put("logLagBytes", rs.getLong("log_lag_bytes"));
+                    m.put("unparsableLogLines", rs.getInt("log_unparsable"));
                     out.add(m);
                 }
             }

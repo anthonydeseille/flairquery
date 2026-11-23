@@ -1,6 +1,8 @@
 package io.github.anthonydeseille.flairquery.collector;
 
 import io.github.anthonydeseille.flairquery.collector.config.CollectorConfig;
+import io.github.anthonydeseille.flairquery.collector.config.Target;
+import io.github.anthonydeseille.flairquery.collector.source.SqlLogPlanSource;
 import io.github.anthonydeseille.flairquery.collector.http.CollectorHttpServer;
 import io.github.anthonydeseille.flairquery.collector.log.Log;
 import io.github.anthonydeseille.flairquery.collector.source.PostgresSource;
@@ -23,8 +25,10 @@ public final class CollectorMain {
         migrateWithRetry(store);
 
         // phase 2: single target (the configuration model already holds a list)
-        Collector collector = new Collector(new PostgresSource(config.targets().get(0)), store,
-                config.retention(), Clock.systemUTC());
+        Target target = config.targets().get(0);
+        Collector collector = new Collector(new PostgresSource(target),
+                config.readPlans() ? new SqlLogPlanSource(target, config.logMaxBytesPerCycle()) : null,
+                store, config.retention(), Clock.systemUTC());
         CollectorHttpServer http = new CollectorHttpServer(collector, store);
         int port = http.start(config.httpPort());
 
@@ -36,7 +40,7 @@ public final class CollectorMain {
         }, "fq-collector-shutdown"));
 
         Log.info("collector started", "target", config.targets().get(0).toString(), "intervalSeconds",
-                config.interval().toSeconds(), "retentionHours", config.retention().toHours(), "httpPort", port);
+                config.interval().toSeconds(), "retentionHours", config.retention().toHours(), "httpPort", port, "plans", config.readPlans());
     }
 
     private static void migrateWithRetry(Store store) throws Exception {

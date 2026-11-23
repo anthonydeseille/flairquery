@@ -13,6 +13,8 @@ public record CollectorConfig(
         Duration interval,
         Duration retention,
         int httpPort,
+        boolean readPlans,
+        long logMaxBytesPerCycle,
         boolean debug) {
 
     public static CollectorConfig fromEnv(Map<String, String> env) {
@@ -30,6 +32,8 @@ public record CollectorConfig(
                 Duration.ofSeconds(positive(env, "FQ_COLLECTOR_INTERVAL", 30)),
                 Duration.ofHours(positive(env, "FQ_COLLECTOR_RETENTION_HOURS", 72)),
                 (int) positive(env, "FQ_COLLECTOR_HTTP_PORT", 9465),
+                !"false".equalsIgnoreCase(env.getOrDefault("FQ_COLLECTOR_PLANS", "true")),
+                positive(env, "FQ_COLLECTOR_LOG_MAX_MB", 64) * 1024 * 1024,
                 "debug".equalsIgnoreCase(env.getOrDefault("FQ_COLLECTOR_LOG_LEVEL", "info")));
     }
 

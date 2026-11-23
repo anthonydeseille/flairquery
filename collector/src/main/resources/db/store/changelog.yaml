@@ -2,3 +2,5 @@
 databaseChangeLog:
   - include:
       file: db/store/001-snapshots.sql
+  - include:
+      file: db/store/002-auto-explain.sql
