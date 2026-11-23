@@ -112,7 +112,13 @@ tools: ## Download pinned kind + kubectl into .tools/bin (checksums verified, no
 
 .PHONY: db-grants
 db-grants: ## (Re)apply the fq_reader role and grants on an existing cluster database (idempotent)
-	$(KUBECTL) -n $(NS) exec -i deploy/postgres -- psql -U flairquery -d flairquery -v ON_ERROR_STOP=1 -q < deploy/postgres/init-fq.sql
+	@# retried: on a fresh volume the postgres image restarts the server once after its init scripts, and the
+	@# readiness probe can already pass on the temporary init server
+	@for i in $$(seq 1 20); do \
+	  $(KUBECTL) -n $(NS) exec -i deploy/postgres -- psql -U flairquery -d flairquery -v ON_ERROR_STOP=1 -q \
+	    < deploy/postgres/init-fq.sql && exit 0; \
+	  echo "db-grants: PostgreSQL not ready yet, retrying ($$i/20)"; sleep 3; \
+	done; exit 1
 
 .PHONY: scorecard collector-port-forward
 scorecard: ## Trap scorecard from the cluster collector (NS, WINDOW=1h); run make load first
