@@ -1,6 +1,6 @@
 package io.github.anthonydeseille.flairquery.agent.caller;
 
-import io.github.anthonydeseille.flairquery.agent.tag.SqlTag;
+import io.github.anthonydeseille.flairquery.sql.SqlTag;
 
 import java.util.List;
 import java.util.Map;
@@ -26,7 +26,7 @@ public final class CallerResolver {
             "org.eclipse.", "io.micrometer.", "io.opentelemetry.", "org.aspectj.", "net.bytebuddy.",
             "org.junit.", "kotlin.", "scala.", "com.fasterxml.", "reactor.", "io.netty.", "org.liquibase.",
             "liquibase.", "org.flywaydb.", "io.github.anthonydeseille.flairquery.agent.",
-            "io.github.anthonydeseille.flairquery.shaded.");
+            "io.github.anthonydeseille.flairquery.shaded.", "io.github.anthonydeseille.flairquery.sql.");
 
     private final StackWalker walker = StackWalker.getInstance();
     private final List<String> basePackages;

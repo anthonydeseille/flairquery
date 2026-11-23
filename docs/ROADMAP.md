@@ -8,6 +8,18 @@ Java agent, SQL tagging (endpoint + caller), N+1 detection, metrics, demo on kin
 - Correlation through the `fq:` tag → endpoint + caller
 - History storage (snapshots) to measure before/after gains
 
+### Multi-service evolution (after phase 2)
+Phase 2 targets a single service. Planned evolution for microservices:
+- `pg_stat_statements` is instance-wide and keyed by (role, database, `queryid`, toplevel):
+  with **one PostgreSQL role per service**, identical SQL from two services stays in two entries
+  (exact attribution); a shared role merges them under the first tag seen.
+- Collector with several targets (instances / databases); storage already keyed by
+  (instance, database, role, service, `queryid`).
+- Detect a role shared by several `app=` values and `FQ_APP_NAME` collisions, and warn.
+- Service as a first-class dimension in the API, the K9s views and the trap scorecard.
+- Cross-service call chains (service A calls B, which runs the N+1) need distributed tracing
+  (propagated trace id); out of scope until then.
+
 ## Phase 3 — Per-endpoint profile
 - Per endpoint: number of statements, SQL time, rows returned, entities loaded vs used
 - Useless EAGER detection:

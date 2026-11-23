@@ -1,6 +1,5 @@
-package io.github.anthonydeseille.flairquery.agent;
+package io.github.anthonydeseille.flairquery.sql;
 
-import io.github.anthonydeseille.flairquery.agent.metrics.SqlNormalizer;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

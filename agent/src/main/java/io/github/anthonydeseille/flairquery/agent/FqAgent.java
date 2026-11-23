@@ -152,6 +152,7 @@ public final class FqAgent {
                 .or(nameStartsWith("net.bytebuddy."))
                 .or(nameStartsWith(SELF + "agent."))
                 .or(nameStartsWith(SELF + "shaded."))
+                .or(nameStartsWith(SELF + "sql."))
                 .or(nameStartsWith("org.springframework.")
                         .and(not(nameStartsWith("org.springframework.web.")))
                         .and(not(nameStartsWith("org.springframework.jdbc."))))

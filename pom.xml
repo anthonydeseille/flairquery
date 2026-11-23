@@ -12,6 +12,7 @@
   <description>SQL / endpoint analysis for Java, Spring and JPA applications on Kubernetes</description>
 
   <modules>
+    <module>core</module>
     <module>agent</module>
     <module>demo-app</module>
     <module>it</module>
@@ -33,6 +34,11 @@
 
   <dependencyManagement>
     <dependencies>
+      <dependency>
+        <groupId>io.github.anthonydeseille.flairquery</groupId>
+        <artifactId>flairquery-core</artifactId>
+        <version>${project.version}</version>
+      </dependency>
       <dependency>
         <groupId>net.bytebuddy</groupId>
         <artifactId>byte-buddy</artifactId>

@@ -1,6 +1,5 @@
-package io.github.anthonydeseille.flairquery.agent.metrics;
+package io.github.anthonydeseille.flairquery.sql;
 
-import io.github.anthonydeseille.flairquery.agent.tag.SqlTag;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;

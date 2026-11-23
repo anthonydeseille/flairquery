@@ -46,6 +46,7 @@ class IgnoreMatcherTest {
             "org.apache.coyote.Request",
             "java.lang.String",
             "io.github.anthonydeseille.flairquery.agent.FqAgent",
+            "io.github.anthonydeseille.flairquery.sql.SqlTag",
             "io.github.anthonydeseille.flairquery.shaded.bytebuddy.ByteBuddy"})
     void irrelevantPackagesAreSkipped(String name) {
         assertThat(ignored(name)).as(name).isTrue();

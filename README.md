@@ -59,6 +59,7 @@ operator: see [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ```
 flairquery/
+├── core/           flairquery-core: shared fq: tag format/parser and SQL normalizer (no dependency)
 ├── agent/          flairquery-agent: Java 21 agent (relocated ByteBuddy, dependency-free shaded jar)
 ├── demo-app/       flairquery-demo-app: target Spring Boot app, traps documented in TRAPS.md
 ├── it/             flairquery-it: integration tests (Testcontainers + real agent)
@@ -164,7 +165,7 @@ An invalid value is logged and replaced by its default: configuration never prev
 - **No other change**: the original SQL follows the comment, untouched (tested).
 - `prepareCall` is **not** tagged: the JDBC escape syntax `{call …}` must stay first.
 
-Formatting and parsing live in a single class (`SqlTag`), ready to be reused by the phase 2 collector.
+Formatting and parsing live in a single class (`SqlTag`, module `flairquery-core`), shared by the agent (embedded in its shaded jar) and the phase 2 collector.
 
 ## HTTP endpoints and sample output
 

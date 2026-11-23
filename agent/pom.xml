@@ -19,7 +19,12 @@
   </properties>
 
   <dependencies>
-    <!-- the ONLY runtime dependency; relocated by the shade plugin -->
+    <!-- shared tag/normalizer code, embedded in the shaded jar (FlairQuery namespace, no relocation) -->
+    <dependency>
+      <groupId>io.github.anthonydeseille.flairquery</groupId>
+      <artifactId>flairquery-core</artifactId>
+    </dependency>
+    <!-- the only third-party runtime dependency; relocated by the shade plugin -->
     <dependency>
       <groupId>net.bytebuddy</groupId>
       <artifactId>byte-buddy</artifactId>

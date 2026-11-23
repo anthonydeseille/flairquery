@@ -1,4 +1,4 @@
-package io.github.anthonydeseille.flairquery.agent.tag;
+package io.github.anthonydeseille.flairquery.sql;
 
 import java.util.LinkedHashMap;
 import java.util.Map;

@@ -1,7 +1,7 @@
 package io.github.anthonydeseille.flairquery.agent;
 
 import io.github.anthonydeseille.flairquery.agent.log.JsonLog;
-import io.github.anthonydeseille.flairquery.agent.tag.SqlTag;
+import io.github.anthonydeseille.flairquery.sql.SqlTag;
 
 import java.util.Arrays;
 import java.util.List;

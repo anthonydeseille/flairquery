@@ -4,7 +4,7 @@ import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import io.github.anthonydeseille.flairquery.agent.bootstrap.Fq;
 import io.github.anthonydeseille.flairquery.agent.context.RequestContextHolder;
-import io.github.anthonydeseille.flairquery.agent.tag.SqlTag;
+import io.github.anthonydeseille.flairquery.sql.SqlTag;
 import io.github.anthonydeseille.flairquery.fixture.DemoServlet;
 import io.github.anthonydeseille.flairquery.fixture.DriverSqlRecorder;
 import io.github.anthonydeseille.flairquery.fixture.FakeHttp;

@@ -1,6 +1,5 @@
-package io.github.anthonydeseille.flairquery.agent;
+package io.github.anthonydeseille.flairquery.sql;
 
-import io.github.anthonydeseille.flairquery.agent.tag.SqlTag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;

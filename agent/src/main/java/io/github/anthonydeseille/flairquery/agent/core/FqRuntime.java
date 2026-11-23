@@ -9,11 +9,11 @@ import io.github.anthonydeseille.flairquery.agent.jdbc.StatementSqlRegistry;
 import io.github.anthonydeseille.flairquery.agent.log.JsonLog;
 import io.github.anthonydeseille.flairquery.agent.metrics.Registry;
 import io.github.anthonydeseille.flairquery.agent.metrics.RequestStats;
-import io.github.anthonydeseille.flairquery.agent.metrics.SqlNormalizer;
+import io.github.anthonydeseille.flairquery.sql.SqlNormalizer;
 import io.github.anthonydeseille.flairquery.agent.servlet.ServletRequestAccessor;
 import io.github.anthonydeseille.flairquery.agent.spi.FqListener;
 import io.github.anthonydeseille.flairquery.agent.spi.RequestSummary;
-import io.github.anthonydeseille.flairquery.agent.tag.SqlTag;
+import io.github.anthonydeseille.flairquery.sql.SqlTag;
 
 import java.util.ArrayList;
 import java.util.List;
