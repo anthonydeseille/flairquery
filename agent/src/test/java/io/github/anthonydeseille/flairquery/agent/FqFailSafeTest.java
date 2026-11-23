@@ -21,6 +21,13 @@ class FqFailSafeTest {
         @Override public void queryEnd(Object st, String sql, long start, Throwable t) { throw new IllegalStateException("boom"); }
         @Override public void requestEnter(Object r) { throw new IllegalStateException("boom"); }
         @Override public void requestExit(Object r, Object s, Throwable t) { throw new StackOverflowError(); }
+        @Override public void entityLoaded(Object e) { throw new IllegalStateException("boom"); }
+        @Override public long lazyLoadStart(String k, String r) { throw new IllegalStateException("boom"); }
+        @Override public void lazyLoadEnd(String k, String r, long s, Throwable t) { throw new IllegalStateException("boom"); }
+        @Override public void inMemoryPagination() { throw new IllegalStateException("boom"); }
+        @Override public void transactionEnter() { throw new IllegalStateException("boom"); }
+        @Override public void transactionExit() { throw new IllegalStateException("boom"); }
+        @Override public void openInView() { throw new IllegalStateException("boom"); }
     };
 
     @AfterEach
@@ -39,6 +46,24 @@ class FqFailSafeTest {
         assertThatCode(() -> Fq.statementPrepared(new Object(), "select 1")).doesNotThrowAnyException();
         assertThat(Fq.queryStart()).isEqualTo(-1L);
         assertThatCode(() -> Fq.queryEnd(new Object(), null, 1L, null)).doesNotThrowAnyException();
+    }
+
+    @Test
+    void ormHooksNeverThrowEither() {
+        Fq.install(EXPLODING);
+
+        assertThatCode(() -> {
+            Fq.entityLoaded(new Object());
+            Fq.entityLoaded(null);
+            Fq.lazyLoadEnd("collection", "A.b", Fq.lazyLoadStart("collection", "A.b"), null);
+            Fq.lazyLoadEnd("collection", "A.b", 1L, null);
+            Fq.inMemoryPagination();
+            Fq.transactionEnter();
+            Fq.transactionExit();
+            Fq.openInView();
+        }).doesNotThrowAnyException();
+        assertThat(Fq.lazyLoadStart("proxy", "A")).isEqualTo(-1L);
+        assertThat(Fq.errorCount()).isPositive();
     }
 
     @Test

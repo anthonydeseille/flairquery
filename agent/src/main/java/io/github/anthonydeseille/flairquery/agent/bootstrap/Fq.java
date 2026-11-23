@@ -94,6 +94,71 @@ public final class Fq {
         }
     }
 
+    // ---------------------------------------------------------------- ORM (phase 3)
+
+    public static void entityLoaded(Object entity) {
+        if (entity == null) {
+            return;
+        }
+        try {
+            hooks.entityLoaded(entity);
+        } catch (Throwable t) {
+            onError("entityLoaded", t);
+        }
+    }
+
+    public static long lazyLoadStart(String kind, String role) {
+        try {
+            return hooks.lazyLoadStart(kind, role);
+        } catch (Throwable t) {
+            onError("lazyLoadStart", t);
+            return -1L;
+        }
+    }
+
+    public static void lazyLoadEnd(String kind, String role, long start, Throwable thrown) {
+        if (start < 0) {
+            return;
+        }
+        try {
+            hooks.lazyLoadEnd(kind, role, start, thrown);
+        } catch (Throwable t) {
+            onError("lazyLoadEnd", t);
+        }
+    }
+
+    public static void inMemoryPagination() {
+        try {
+            hooks.inMemoryPagination();
+        } catch (Throwable t) {
+            onError("inMemoryPagination", t);
+        }
+    }
+
+    public static void transactionEnter() {
+        try {
+            hooks.transactionEnter();
+        } catch (Throwable t) {
+            onError("transactionEnter", t);
+        }
+    }
+
+    public static void transactionExit() {
+        try {
+            hooks.transactionExit();
+        } catch (Throwable t) {
+            onError("transactionExit", t);
+        }
+    }
+
+    public static void openInView() {
+        try {
+            hooks.openInView();
+        } catch (Throwable t) {
+            onError("openInView", t);
+        }
+    }
+
     private static void onError(String operation, Throwable t) {
         try {
             int n = ERRORS.incrementAndGet();

@@ -22,7 +22,10 @@ public record FqConfig(
         double samplingRate,
         int httpPort,
         JsonLog.Level logLevel,
-        Set<String> testFaults) {
+        Set<String> testFaults,
+        boolean profile,
+        boolean profileEntities,
+        double profileSample) {
 
     public static final int DEFAULT_NPLUSONE_THRESHOLD = 5;
     public static final double DEFAULT_SAMPLING_RATE = 1.0;
@@ -52,7 +55,13 @@ public record FqConfig(
         // test-only: forces internal failures to prove the fail-safe contract
         Set<String> faults = Set.copyOf(splitList(env.get("FQ_TEST_FAULT")));
 
-        return new FqConfig(enabled, app, packages, threshold, sampling, port, level, faults);
+        // phase 3: JPA profile (Hibernate / Spring transaction hooks), entity getter tracking, its own sampling
+        boolean profile = parseBoolean(env, "FQ_PROFILE", true);
+        boolean profileEntities = profile && parseBoolean(env, "FQ_PROFILE_ENTITIES", true);
+        double profileSample = parseDouble(env, "FQ_PROFILE_SAMPLE", 1.0, 0.0, 1.0);
+
+        return new FqConfig(enabled, app, packages, threshold, sampling, port, level, faults,
+                profile, profileEntities, profileSample);
     }
 
     public static FqConfig defaults() {

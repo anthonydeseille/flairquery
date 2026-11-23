@@ -16,9 +16,13 @@ public final class RequestContextHolder {
 
     /** @return the context, and whether it was created by this call */
     public static RequestContext enter(Object request, String method, String uri, boolean sampled) {
+        return enter(request, method, uri, sampled, sampled);
+    }
+
+    public static RequestContext enter(Object request, String method, String uri, boolean sampled, boolean profiled) {
         RequestContext ctx = CURRENT.get();
         if (ctx == null) {
-            ctx = new RequestContext(request, method, uri, sampled);
+            ctx = new RequestContext(request, method, uri, sampled, profiled);
             CURRENT.set(ctx);
         }
         ctx.depth++;

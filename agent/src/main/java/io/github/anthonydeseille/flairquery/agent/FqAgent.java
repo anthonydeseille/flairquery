@@ -8,6 +8,12 @@ import io.github.anthonydeseille.flairquery.agent.jdbc.PreparedExecuteAdvice;
 import io.github.anthonydeseille.flairquery.agent.jdbc.SqlArgumentAdvice;
 import io.github.anthonydeseille.flairquery.agent.jdbc.StatementExecuteAdvice;
 import io.github.anthonydeseille.flairquery.agent.log.JsonLog;
+import io.github.anthonydeseille.flairquery.agent.orm.CollectionInitializeAdvice;
+import io.github.anthonydeseille.flairquery.agent.orm.EntityLoadedAdvice;
+import io.github.anthonydeseille.flairquery.agent.orm.InMemoryPaginationAdvice;
+import io.github.anthonydeseille.flairquery.agent.orm.ProxyInitializeAdvice;
+import io.github.anthonydeseille.flairquery.agent.spring.OpenInViewAdvice;
+import io.github.anthonydeseille.flairquery.agent.spring.TransactionAdvice;
 import io.github.anthonydeseille.flairquery.agent.servlet.HttpServletServiceAdvice;
 import net.bytebuddy.agent.builder.AgentBuilder;
 import net.bytebuddy.agent.builder.ResettableClassFileTransformer;
@@ -96,7 +102,7 @@ public final class FqAgent {
         FqRuntime runtime = new FqRuntime(config);
         ResettableClassFileTransformer transformer = null;
         try {
-            transformer = agentBuilder().installOn(inst);
+            transformer = agentBuilder(config).installOn(inst);
             startTypeCacheCleaner();
             Fq.install(runtime);
         } catch (Throwable t) {
@@ -110,13 +116,15 @@ public final class FqAgent {
             }
             throw t;
         }
-        FqHttpServer http = new FqHttpServer(runtime.registry());
+        FqHttpServer http = new FqHttpServer(runtime.registry(), runtime.profiles());
         http.start(config.httpPort()); // failure only disables the endpoints
         JsonLog.info("agent started",
                 "app", config.appName(),
                 "basePackages", config.basePackages(),
                 "nPlusOneThreshold", config.nPlusOneThreshold(),
                 "samplingRate", config.samplingRate(),
+                "profile", config.profile(),
+                "profileSample", config.profileSample(),
                 "httpPort", http.port());
         return new Installation(runtime, transformer, inst, http);
     }
@@ -155,7 +163,8 @@ public final class FqAgent {
                 .or(nameStartsWith(SELF + "sql."))
                 .or(nameStartsWith("org.springframework.")
                         .and(not(nameStartsWith("org.springframework.web.")))
-                        .and(not(nameStartsWith("org.springframework.jdbc."))))
+                        .and(not(nameStartsWith("org.springframework.jdbc.")))
+                        .and(not(namedOneOf(SPRING_HOOKS))))
                 .or(nameStartsWith("com.fasterxml."))
                 .or(nameStartsWith("ch.qos.logback."))
                 .or(nameStartsWith("org.slf4j."))
@@ -170,7 +179,7 @@ public final class FqAgent {
                 .or(nameStartsWith("org.antlr."))
                 .or(nameStartsWith("org.thymeleaf."))
                 // ORM / migration tools: no java.sql.Connection or Statement implementation inside
-                .or(nameStartsWith("org.hibernate."))
+                .or(nameStartsWith("org.hibernate.").and(not(namedOneOf(HIBERNATE_HOOKS))))
                 .or(nameStartsWith("liquibase."))
                 .or(nameStartsWith("org.liquibase."))
                 // Tomcat internals: requests reach jakarta.servlet.http.HttpServlet#service anyway
@@ -180,7 +189,59 @@ public final class FqAgent {
                 .or(isSynthetic());
     }
 
+    /** The only Hibernate classes instrumented (phase 3 profile): everything else in org.hibernate stays ignored. */
+    static final String[] HIBERNATE_HOOKS = {
+            "org.hibernate.engine.internal.StatefulPersistenceContext",
+            "org.hibernate.collection.spi.AbstractPersistentCollection",
+            "org.hibernate.proxy.AbstractLazyInitializer",
+            "org.hibernate.query.QueryLogging_$logger",
+    };
+    static final String[] SPRING_HOOKS = {
+            "org.springframework.transaction.interceptor.TransactionAspectSupport",
+            "org.springframework.transaction.support.TransactionTemplate",
+            "org.springframework.orm.jpa.support.OpenEntityManagerInViewInterceptor",
+    };
+
     static AgentBuilder agentBuilder() {
+        return agentBuilder(FqConfig.defaults());
+    }
+
+    static AgentBuilder agentBuilder(FqConfig config) {
+        AgentBuilder builder = baseBuilder();
+        if (!config.profile()) {
+            return builder;
+        }
+        return builder
+                // phase 3: JPA profile
+                .type(named(HIBERNATE_HOOKS[0]))
+                .transform(new AgentBuilder.Transformer.ForAdvice()
+                        .advice(named("addEntity").and(takesArguments(2))
+                                        .and(takesArgument(0, named("org.hibernate.engine.spi.EntityKey"))),
+                                EntityLoadedAdvice.class.getName()))
+                .type(named(HIBERNATE_HOOKS[1]))
+                .transform(new AgentBuilder.Transformer.ForAdvice()
+                        .advice(named("initialize").and(takesArguments(1)).and(takesArgument(0, boolean.class)),
+                                CollectionInitializeAdvice.class.getName()))
+                .type(named(HIBERNATE_HOOKS[2]))
+                .transform(new AgentBuilder.Transformer.ForAdvice()
+                        .advice(named("initialize").and(takesArguments(0)), ProxyInitializeAdvice.class.getName()))
+                .type(named(HIBERNATE_HOOKS[3]))
+                .transform(new AgentBuilder.Transformer.ForAdvice()
+                        .advice(named("firstOrMaxResultsSpecifiedWithCollectionFetch").and(takesArguments(0)),
+                                InMemoryPaginationAdvice.class.getName()))
+                .type(named(SPRING_HOOKS[0]))
+                .transform(new AgentBuilder.Transformer.ForAdvice()
+                        .advice(named("invokeWithinTransaction").and(takesArguments(3)),
+                                TransactionAdvice.class.getName()))
+                .type(named(SPRING_HOOKS[1]))
+                .transform(new AgentBuilder.Transformer.ForAdvice()
+                        .advice(named("execute").and(takesArguments(1)), TransactionAdvice.class.getName()))
+                .type(named(SPRING_HOOKS[2]))
+                .transform(new AgentBuilder.Transformer.ForAdvice()
+                        .advice(named("preHandle").and(takesArguments(1)), OpenInViewAdvice.class.getName()));
+    }
+
+    private static AgentBuilder baseBuilder() {
         return new AgentBuilder.Default()
                 .disableClassFormatChanges()
                 .with(AgentBuilder.RedefinitionStrategy.RETRANSFORMATION)

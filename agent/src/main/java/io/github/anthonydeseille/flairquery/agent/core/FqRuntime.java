@@ -9,6 +9,7 @@ import io.github.anthonydeseille.flairquery.agent.jdbc.StatementSqlRegistry;
 import io.github.anthonydeseille.flairquery.agent.log.JsonLog;
 import io.github.anthonydeseille.flairquery.agent.metrics.Registry;
 import io.github.anthonydeseille.flairquery.agent.metrics.RequestStats;
+import io.github.anthonydeseille.flairquery.agent.profile.ProfileRegistry;
 import io.github.anthonydeseille.flairquery.sql.SqlNormalizer;
 import io.github.anthonydeseille.flairquery.agent.servlet.ServletRequestAccessor;
 import io.github.anthonydeseille.flairquery.agent.spi.FqListener;
@@ -37,16 +38,21 @@ public final class FqRuntime implements FqHooks {
     private final SqlNormalizer normalizer = new SqlNormalizer();
     private final Registry registry;
     private final List<FqListener> listeners = new CopyOnWriteArrayList<>();
+    private final ProfileRegistry profiles = new ProfileRegistry();
 
     public FqRuntime(FqConfig config) {
         this.config = config;
         this.callerResolver = new CallerResolver(config.basePackages());
         this.registry = new Registry(config.appName(), config.nPlusOneThreshold());
         this.listeners.add(registry);
+        if (config.profile()) {
+            this.listeners.add(profiles);
+        }
     }
 
     public FqConfig config() { return config; }
     public Registry registry() { return registry; }
+    public ProfileRegistry profiles() { return profiles; }
 
     public void addListener(FqListener listener) {
         listeners.add(listener);
@@ -132,7 +138,10 @@ public final class FqRuntime implements FqHooks {
         String uri = ServletRequestAccessor.uri(request);
         double rate = config.samplingRate();
         boolean sampled = rate >= 1.0 || (rate > 0.0 && ThreadLocalRandom.current().nextDouble() < rate);
-        RequestContextHolder.enter(request, method, uri, sampled);
+        double profileRate = config.profileSample();
+        boolean profiled = config.profile()
+                && (profileRate >= 1.0 || (profileRate > 0.0 && ThreadLocalRandom.current().nextDouble() < profileRate));
+        RequestContextHolder.enter(request, method, uri, sampled, profiled);
     }
 
     @Override
@@ -152,7 +161,7 @@ public final class FqRuntime implements FqHooks {
         }
         int status = thrown != null ? 500 : ServletRequestAccessor.status(response);
         RequestSummary summary = new RequestSummary(config.appName(), endpoint, status, duration, stats,
-                List.copyOf(nPlusOne));
+                List.copyOf(nPlusOne), ctx.profiled());
         for (FqListener l : listeners) {
             l.onRequest(summary);
         }
@@ -167,6 +176,76 @@ public final class FqRuntime implements FqHooks {
         if (JsonLog.isEnabled(JsonLog.Level.DEBUG)) {
             JsonLog.debug("request", "endpoint", endpoint, "status", status,
                     "durationMs", duration / 1e6, "queries", stats.queries(), "sqlMs", stats.sqlNanos() / 1e6);
+        }
+    }
+
+    // ---------------------------------------------------------------- JPA profile (phase 3)
+
+    private static RequestContext profiled() {
+        RequestContext ctx = RequestContextHolder.current();
+        return ctx != null && ctx.profiled() ? ctx : null;
+    }
+
+    @Override
+    public void entityLoaded(Object entity) {
+        RequestContext ctx = profiled();
+        if (ctx != null) {
+            ctx.stats().entityLoaded(entityName(entity.getClass()));
+        }
+    }
+
+    /** Entity class name without bytecode-generated proxy suffixes (Hibernate$HibernateProxy$...). */
+    static String entityName(Class<?> type) {
+        String name = type.getName();
+        int cut = name.indexOf("$HibernateProxy");
+        return cut > 0 ? name.substring(0, cut) : name;
+    }
+
+    @Override
+    public long lazyLoadStart(String kind, String role) {
+        return profiled() != null ? System.nanoTime() : -1L;
+    }
+
+    @Override
+    public void lazyLoadEnd(String kind, String role, long start, Throwable thrown) {
+        RequestContext ctx = profiled();
+        if (ctx == null) {
+            return;
+        }
+        String caller = callerResolver.resolve();
+        ctx.stats().lazyLoaded(kind, role == null ? SqlTag.UNKNOWN : role, System.nanoTime() - start,
+                ctx.transactionDepth == 0, caller);
+    }
+
+    @Override
+    public void inMemoryPagination() {
+        RequestContext ctx = profiled();
+        if (ctx != null) {
+            ctx.stats().inMemoryPagination();
+        }
+    }
+
+    @Override
+    public void transactionEnter() {
+        RequestContext ctx = RequestContextHolder.current();
+        if (ctx != null) {
+            ctx.transactionDepth++;
+        }
+    }
+
+    @Override
+    public void transactionExit() {
+        RequestContext ctx = RequestContextHolder.current();
+        if (ctx != null && ctx.transactionDepth > 0) {
+            ctx.transactionDepth--;
+        }
+    }
+
+    @Override
+    public void openInView() {
+        RequestContext ctx = profiled();
+        if (ctx != null) {
+            ctx.stats().openInView(true);
         }
     }
 

@@ -12,6 +12,11 @@ public final class RequestContext {
     private final String method;
     private final String uri;
     private final boolean sampled;
+    private final boolean profiled;
+    /** Spring transaction boundaries currently open on this thread (@Transactional, TransactionTemplate). */
+    public int transactionDepth;
+    /** OpenEntityManagerInViewInterceptor ran for this request. */
+    public boolean openInView;
     private final long startNanos;
     private final RequestStats stats = new RequestStats();
     int depth;
@@ -19,11 +24,12 @@ public final class RequestContext {
     /** Sanitized endpoint once the Spring pattern is known (it never changes afterwards). */
     private volatile String resolvedEndpoint;
 
-    RequestContext(Object request, String method, String uri, boolean sampled) {
+    RequestContext(Object request, String method, String uri, boolean sampled, boolean profiled) {
         this.request = request;
         this.method = method;
         this.uri = uri;
         this.sampled = sampled;
+        this.profiled = sampled && profiled;
         this.startNanos = System.nanoTime();
     }
 
@@ -31,6 +37,8 @@ public final class RequestContext {
     public String method() { return method; }
     public String uri() { return uri; }
     public boolean sampled() { return sampled; }
+    /** JPA profile recorded for this request (FQ_PROFILE_SAMPLE among sampled requests). */
+    public boolean profiled() { return profiled; }
     public long startNanos() { return startNanos; }
     public int depth() { return depth; }
     public RequestStats stats() { return stats; }

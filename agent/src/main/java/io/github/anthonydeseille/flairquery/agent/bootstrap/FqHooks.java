@@ -25,6 +25,30 @@ public interface FqHooks {
 
     void requestExit(Object servletRequest, Object servletResponse, Throwable thrown);
 
+    // ---------------------------------------------------------------- ORM (phase 3)
+
+    /** Hibernate put an entity into the persistence context (loaded from a result set). */
+    default void entityLoaded(Object entity) { }
+
+    /**
+     * A lazy collection or proxy starts loading ({@code kind} = "collection" | "proxy", {@code role} = collection
+     * role or entity name). Returns a start timestamp, or {@code -1} when not measured.
+     */
+    default long lazyLoadStart(String kind, String role) { return -1L; }
+
+    default void lazyLoadEnd(String kind, String role, long start, Throwable thrown) { }
+
+    /** Hibernate applied first/max results in memory because of a collection fetch (HHH90003004). */
+    default void inMemoryPagination() { }
+
+    /** Entering / leaving a Spring-managed transaction boundary ({@code @Transactional}, TransactionTemplate). */
+    default void transactionEnter() { }
+
+    default void transactionExit() { }
+
+    /** Spring's OpenEntityManagerInViewInterceptor is active for the current request. */
+    default void openInView() { }
+
     FqHooks NOOP = new FqHooks() {
         @Override public String tagSql(String sql) { return sql; }
         @Override public void statementPrepared(Object statement, String sql) { }

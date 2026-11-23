@@ -6,6 +6,7 @@ import io.github.anthonydeseille.flairquery.agent.log.Json;
 import io.github.anthonydeseille.flairquery.agent.log.JsonLog;
 import io.github.anthonydeseille.flairquery.agent.metrics.PrometheusWriter;
 import io.github.anthonydeseille.flairquery.agent.metrics.Registry;
+import io.github.anthonydeseille.flairquery.agent.profile.ProfileRegistry;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -20,7 +21,8 @@ import java.util.concurrent.Executors;
 
 /**
  * Read-only HTTP endpoints on {@code FQ_HTTP_PORT}, served by the JDK HttpServer on one daemon thread:
- * {@code /metrics}, {@code /fq/top}, {@code /fq/nplusone}, {@code /fq/endpoints}, {@code /fq/health}.
+ * {@code /metrics}, {@code /fq/top}, {@code /fq/nplusone}, {@code /fq/endpoints}, {@code /fq/profile},
+ * {@code /fq/health}.
  */
 public final class FqHttpServer {
 
@@ -29,11 +31,17 @@ public final class FqHttpServer {
     static final int MAX_TOP = 500;
 
     private final Registry registry;
+    private final ProfileRegistry profiles;
     private HttpServer server;
     private ExecutorService executor;
 
     public FqHttpServer(Registry registry) {
+        this(registry, new ProfileRegistry());
+    }
+
+    public FqHttpServer(Registry registry, ProfileRegistry profiles) {
         this.registry = registry;
+        this.profiles = profiles;
     }
 
     /** Never throws: a busy port or a JRE without jdk.httpserver only disables the endpoints. */
@@ -52,6 +60,7 @@ public final class FqHttpServer {
             server.createContext("/fq/nplusone", ex -> json(ex, Map.of(
                     "threshold", registry.nPlusOneThreshold(), "nplusone", registry.nPlusOne())));
             server.createContext("/fq/endpoints", ex -> json(ex, Map.of("endpoints", registry.endpoints())));
+            server.createContext("/fq/profile", ex -> json(ex, Map.of("profiles", profiles.profiles())));
             server.createContext("/fq/health", ex -> json(ex, Map.of("status", "UP")));
             server.createContext("/", ex -> respond(ex, 404, "application/json", "{\"error\":\"not found\"}"));
             startAsDaemon(server);

@@ -20,6 +20,9 @@ class FqConfigTest {
         assertThat(c.samplingRate()).isEqualTo(1.0);
         assertThat(c.httpPort()).isEqualTo(9464);
         assertThat(c.testFaults()).isEmpty();
+        assertThat(c.profile()).isTrue();
+        assertThat(c.profileEntities()).isTrue();
+        assertThat(c.profileSample()).isEqualTo(1.0);
     }
 
     @Test
@@ -55,5 +58,18 @@ class FqConfigTest {
         assertThat(c.nPlusOneThreshold()).isEqualTo(5);
         assertThat(c.samplingRate()).isEqualTo(1.0);
         assertThat(c.httpPort()).isEqualTo(9464);
+    }
+
+    @Test
+    void profileSwitches() {
+        FqConfig off = FqConfig.fromEnv(Map.of("FQ_PROFILE", "false", "FQ_PROFILE_ENTITIES", "true"));
+        assertThat(off.profile()).isFalse();
+        assertThat(off.profileEntities()).as("entities need the profile").isFalse();
+
+        FqConfig sampled = FqConfig.fromEnv(Map.of("FQ_PROFILE_ENTITIES", "off", "FQ_PROFILE_SAMPLE", "0.1"));
+        assertThat(sampled.profile()).isTrue();
+        assertThat(sampled.profileEntities()).isFalse();
+        assertThat(sampled.profileSample()).isEqualTo(0.1);
+        assertThat(FqConfig.fromEnv(Map.of("FQ_PROFILE_SAMPLE", "2")).profileSample()).isEqualTo(1.0);
     }
 }

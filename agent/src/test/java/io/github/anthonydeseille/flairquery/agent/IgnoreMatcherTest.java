@@ -29,7 +29,15 @@ class IgnoreMatcherTest {
             "org.h2.jdbc.JdbcConnection",
             "com.mysql.cj.jdbc.ConnectionImpl",
             "oracle.jdbc.driver.T4CConnection",
-            "com.acme.app.MyServlet"})
+            "com.acme.app.MyServlet",
+            // phase 3 JPA profile hooks: the only Hibernate / Spring core classes instrumented
+            "org.hibernate.engine.internal.StatefulPersistenceContext",
+            "org.hibernate.collection.spi.AbstractPersistentCollection",
+            "org.hibernate.proxy.AbstractLazyInitializer",
+            "org.hibernate.query.QueryLogging_$logger",
+            "org.springframework.transaction.interceptor.TransactionAspectSupport",
+            "org.springframework.transaction.support.TransactionTemplate",
+            "org.springframework.orm.jpa.support.OpenEntityManagerInViewInterceptor"})
     void instrumentationTargetsAreNeverIgnored(String name) {
         assertThat(ignored(name)).as(name).isFalse();
     }
@@ -41,6 +49,10 @@ class IgnoreMatcherTest {
             "com.fasterxml.jackson.databind.ObjectMapper",
             "ch.qos.logback.classic.Logger",
             "org.hibernate.internal.SessionImpl",
+            "org.hibernate.engine.internal.StatefulPersistenceContextSomethingElse",
+            "org.hibernate.collection.spi.PersistentBag",
+            "org.springframework.transaction.interceptor.TransactionInterceptor",
+            "org.springframework.orm.jpa.JpaTransactionManager",
             "liquibase.database.jvm.JdbcConnection",
             "org.apache.catalina.servlets.DefaultServlet",
             "org.apache.coyote.Request",
