@@ -1,0 +1,7 @@
+# kind cluster for FlairQuery phase 1 (make cluster). Single node: control plane + workloads.
+# Note: no app.kubernetes.io/* node label here, kubelet rejects *.kubernetes.io labels in --node-labels.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: flairquery
+nodes:
+  - role: control-plane

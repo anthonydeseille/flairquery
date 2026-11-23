@@ -52,3 +52,83 @@ traffic-local: ## Call every demo endpoint (ROUNDS=5)
 
 demo-local-clean: ## Stop local Postgres and DELETE its volume
 	docker compose -f $(LOCAL_COMPOSE) down -v
+
+# ---------------------------------------------------------------- Kubernetes (kind by default, k3d supported)
+CLUSTER_TOOL ?= kind
+CLUSTER_NAME := flairquery
+KIND    ?= $(if $(wildcard .tools/bin/kind),.tools/bin/kind,kind)
+KUBECTL_BIN ?= $(if $(wildcard .tools/bin/kubectl),.tools/bin/kubectl,kubectl)
+K3D     ?= k3d
+# always target the FlairQuery cluster explicitly, never the current kubectl context
+KUBE_CONTEXT := $(if $(filter k3d,$(CLUSTER_TOOL)),k3d-$(CLUSTER_NAME),kind-$(CLUSTER_NAME))
+KUBECTL := $(KUBECTL_BIN) --context $(KUBE_CONTEXT)
+OVERLAY ?= dev
+NS ?= $(if $(filter e2e,$(OVERLAY)),fq-e2e,fq-dev)
+IMAGES := flairquery/agent:dev flairquery/demo-app:dev flairquery/tools:dev
+OL_SUBSET ?= $(HOME)/.cache/flairquery/openlibrary/subset.jsonl.gz
+ROUNDS ?= 5
+DOCKER_CTX := target/docker
+DOCKER_ARCH ?= $(shell docker version --format '{{.Server.Arch}}' 2>/dev/null || echo amd64)
+
+.PHONY: cluster build images deploy seed load status undeploy clean
+cluster: ## Create the local cluster (kind by default, CLUSTER_TOOL=k3d supported)
+ifeq ($(CLUSTER_TOOL),k3d)
+	@$(K3D) cluster list $(CLUSTER_NAME) >/dev/null 2>&1 || $(K3D) cluster create $(CLUSTER_NAME) --wait
+else
+	@$(KIND) get clusters 2>/dev/null | grep -qx $(CLUSTER_NAME) || $(KIND) create cluster --config deploy/kind/cluster.yaml --wait 120s
+endif
+	$(KUBECTL) get nodes
+
+images: jars ## Build the agent, demo app and tools images
+	rm -rf $(DOCKER_CTX) && mkdir -p $(DOCKER_CTX)/agent $(DOCKER_CTX)/demo-app $(DOCKER_CTX)/tools/ol-cache
+	cp $(AGENT_JAR) $(DOCKER_CTX)/agent/ && cp $(DEMO_JAR) $(DOCKER_CTX)/demo-app/
+	cp -R corpus scripts $(DOCKER_CTX)/tools/ && rm -rf $(DOCKER_CTX)/tools/corpus/__pycache__
+	@if [ -f "$(OL_SUBSET)" ]; then cp "$(OL_SUBSET)" $(DOCKER_CTX)/tools/ol-cache/ && echo "Open Library subset included"; else echo "no Open Library subset cached (generated data only)"; fi
+	docker build -q -t flairquery/agent:dev -f deploy/images/agent/Dockerfile $(DOCKER_CTX)/agent
+	docker build -q -t flairquery/demo-app:dev -f deploy/images/demo-app/Dockerfile $(DOCKER_CTX)/demo-app
+	docker build -q -t flairquery/tools:dev -f deploy/images/tools/Dockerfile $(DOCKER_CTX)/tools
+
+build: images ## Build images and load them into the cluster
+	docker image inspect postgres:16 >/dev/null 2>&1 || docker pull -q postgres:16
+ifeq ($(CLUSTER_TOOL),k3d)
+	$(K3D) image import -c $(CLUSTER_NAME) $(IMAGES) postgres:16
+else
+	@# `kind load docker-image` fails on multi-platform images with Docker's containerd image store
+	@# ("content digest ... not found"): export one platform to a temporary archive instead.
+	@mkdir -p $(DOCKER_CTX) && for img in $(IMAGES) postgres:16; do \
+	  docker save --platform linux/$(DOCKER_ARCH) -o $(DOCKER_CTX)/img.tar $$img && \
+	  $(KIND) load image-archive --name $(CLUSTER_NAME) $(DOCKER_CTX)/img.tar >/dev/null && \
+	  rm -f $(DOCKER_CTX)/img.tar && echo "loaded $$img"; done
+endif
+
+deploy: ## Deploy OVERLAY=dev|e2e|pool-overflow and wait until ready
+	$(KUBECTL_BIN) kustomize --load-restrictor=LoadRestrictionsNone deploy/k8s/overlays/$(OVERLAY) | $(KUBECTL) apply -f -
+	$(KUBECTL) -n $(NS) rollout status deploy/postgres --timeout=5m
+	$(KUBECTL) -n $(NS) rollout status deploy/demo-app --timeout=10m
+
+seed: ## Load corpus PROFILE=S|M with a Job (FORCE=1 to reload)
+	-$(KUBECTL) -n $(NS) delete job fq-seed --ignore-not-found --wait=true
+	sed -e 's/__PROFILE__/$(PROFILE)/' -e 's/__FORCE__/$(if $(FORCE),--force,none)/' deploy/k8s/jobs/seed.yaml | $(KUBECTL) -n $(NS) apply -f -
+	$(KUBECTL) -n $(NS) wait --for=condition=complete job/fq-seed --timeout=40m || { $(KUBECTL) -n $(NS) logs job/fq-seed --tail=30; exit 1; }
+	$(KUBECTL) -n $(NS) logs job/fq-seed --tail=8
+
+load: ## Generate traffic on every demo endpoint with a Job (ROUNDS=5)
+	-$(KUBECTL) -n $(NS) delete job fq-load --ignore-not-found --wait=true
+	sed -e 's/__ROUNDS__/$(ROUNDS)/' deploy/k8s/jobs/load.yaml | $(KUBECTL) -n $(NS) apply -f -
+	$(KUBECTL) -n $(NS) wait --for=condition=complete job/fq-load --timeout=30m || { $(KUBECTL) -n $(NS) logs job/fq-load --tail=30; exit 1; }
+	$(KUBECTL) -n $(NS) logs job/fq-load --tail=3
+
+status: ## Pods and resources of the namespace
+	$(KUBECTL) -n $(NS) get pods,svc,pvc,jobs -o wide
+
+undeploy: ## Delete the namespace NS (and its data)
+	$(KUBECTL) delete namespace $(NS) --ignore-not-found --wait=true
+
+clean: ## Delete the cluster and the FlairQuery images (frees disk space)
+ifeq ($(CLUSTER_TOOL),k3d)
+	-$(K3D) cluster delete $(CLUSTER_NAME)
+else
+	-$(KIND) delete cluster --name $(CLUSTER_NAME)
+endif
+	-docker image rm $(IMAGES) 2>/dev/null
+	rm -rf $(DOCKER_CTX)

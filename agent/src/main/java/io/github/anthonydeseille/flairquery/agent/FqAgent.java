@@ -16,8 +16,15 @@ import net.bytebuddy.description.type.TypeDescription;
 import net.bytebuddy.dynamic.DynamicType;
 import net.bytebuddy.utility.JavaModule;
 
+import net.bytebuddy.matcher.ElementMatcher;
+import net.bytebuddy.pool.TypePool;
+
 import java.lang.instrument.Instrumentation;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 import static net.bytebuddy.matcher.ElementMatchers.hasSuperType;
 import static net.bytebuddy.matcher.ElementMatchers.isAbstract;
@@ -90,6 +97,7 @@ public final class FqAgent {
         ResettableClassFileTransformer transformer = null;
         try {
             transformer = agentBuilder().installOn(inst);
+            startTypeCacheCleaner();
             Fq.install(runtime);
         } catch (Throwable t) {
             Fq.reset();
@@ -113,21 +121,72 @@ public final class FqAgent {
         return new Installation(runtime, transformer, inst, http);
     }
 
+    /**
+     * Type descriptions are resolved from class files to evaluate {@code hasSuperType}; without a cache the
+     * same super types (Object, Spring/Hibernate bases...) are parsed thousands of times at startup.
+     * Measured on kind with a 500m CPU limit: startup 46.7 s without agent, 69.9 s with the uncached agent.
+     * The cache is cleared every minute so it never grows with the application's lifetime.
+     */
+    private static final ConcurrentHashMap<ClassLoader, TypePool.CacheProvider> TYPE_CACHE = new ConcurrentHashMap<>();
+
+    private static void startTypeCacheCleaner() {
+        ScheduledExecutorService cleaner = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "flairquery-typecache-cleaner");
+            t.setDaemon(true);
+            return t;
+        });
+        cleaner.scheduleAtFixedRate(TYPE_CACHE::clear, 60, 60, TimeUnit.SECONDS);
+    }
+
+    /**
+     * Packages that can contain neither a servlet to intercept nor a JDBC implementation: skipped before
+     * any type matching. Spring is skipped except its web (DispatcherServlet) and jdbc packages; pools that
+     * implement java.sql.Connection (HikariCP, commons-dbcp2, c3p0...) and drivers are never skipped.
+     */
+    static ElementMatcher.Junction<TypeDescription> ignored() {
+        return nameStartsWith("java.")
+                .or(nameStartsWith("javax."))
+                .or(nameStartsWith("jdk."))
+                .or(nameStartsWith("sun."))
+                .or(nameStartsWith("com.sun."))
+                .or(nameStartsWith("net.bytebuddy."))
+                .or(nameStartsWith(SELF + "agent."))
+                .or(nameStartsWith(SELF + "shaded."))
+                .or(nameStartsWith("org.springframework.")
+                        .and(not(nameStartsWith("org.springframework.web.")))
+                        .and(not(nameStartsWith("org.springframework.jdbc."))))
+                .or(nameStartsWith("com.fasterxml."))
+                .or(nameStartsWith("ch.qos.logback."))
+                .or(nameStartsWith("org.slf4j."))
+                .or(nameStartsWith("org.apache.logging."))
+                .or(nameStartsWith("org.yaml.snakeyaml."))
+                .or(nameStartsWith("io.micrometer."))
+                .or(nameStartsWith("org.aspectj."))
+                .or(nameStartsWith("kotlin."))
+                .or(nameStartsWith("scala."))
+                .or(nameStartsWith("org.jboss.logging."))
+                .or(nameStartsWith("org.hibernate.validator."))
+                .or(nameStartsWith("org.antlr."))
+                .or(nameStartsWith("org.thymeleaf."))
+                // ORM / migration tools: no java.sql.Connection or Statement implementation inside
+                .or(nameStartsWith("org.hibernate."))
+                .or(nameStartsWith("liquibase."))
+                .or(nameStartsWith("org.liquibase."))
+                // Tomcat internals: requests reach jakarta.servlet.http.HttpServlet#service anyway
+                .or(nameStartsWith("org.apache.catalina."))
+                .or(nameStartsWith("org.apache.coyote."))
+                .or(nameStartsWith("org.apache.tomcat.util."))
+                .or(isSynthetic());
+    }
+
     static AgentBuilder agentBuilder() {
         return new AgentBuilder.Default()
                 .disableClassFormatChanges()
                 .with(AgentBuilder.RedefinitionStrategy.RETRANSFORMATION)
                 .with(AgentBuilder.DescriptionStrategy.Default.POOL_ONLY)
+                .with(new AgentBuilder.PoolStrategy.WithTypePoolCache.Simple(TYPE_CACHE))
                 .with(new LoggingListener())
-                .ignore(nameStartsWith("java.")
-                        .or(nameStartsWith("javax."))
-                        .or(nameStartsWith("jdk."))
-                        .or(nameStartsWith("sun."))
-                        .or(nameStartsWith("com.sun."))
-                        .or(nameStartsWith("net.bytebuddy."))
-                        .or(nameStartsWith(SELF + "agent."))
-                        .or(nameStartsWith(SELF + "shaded."))
-                        .or(isSynthetic()))
+                .ignore(ignored())
                 // HTTP request context
                 .type(not(isInterface()).and(hasSuperType(named("jakarta.servlet.http.HttpServlet"))))
                 .transform(new AgentBuilder.Transformer.ForAdvice()

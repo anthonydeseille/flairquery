@@ -1,0 +1,112 @@
+# Demo app with the FlairQuery agent injected WITHOUT changing the image:
+# an initContainer copies the agent jar into an emptyDir, JAVA_TOOL_OPTIONS loads it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-app
+  labels:
+    app.kubernetes.io/name: demo-app
+    app.kubernetes.io/component: api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: demo-app
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: demo-app
+        app.kubernetes.io/component: api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9464"
+        prometheus.io/path: /metrics
+    spec:
+      initContainers:
+        - name: fq-agent
+          image: flairquery/agent:dev
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - name: fq-agent
+              mountPath: /fq
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: 100m, memory: 32Mi}
+      containers:
+        - name: demo-app
+          image: flairquery/demo-app:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: DB_URL
+              value: jdbc:postgresql://postgres:5432/flairquery
+            - name: DB_USER
+              valueFrom: {secretKeyRef: {name: postgres-credentials, key: POSTGRES_USER}}
+            - name: DB_PASSWORD
+              valueFrom: {secretKeyRef: {name: postgres-credentials, key: POSTGRES_PASSWORD}}
+            - name: HIKARI_MAX_POOL
+              value: "10"
+            # MISSIZED ON PURPOSE (phase 6 target): 80% of the memory limit as heap leaves too little
+            # room for metaspace, threads and direct buffers.
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/fq/agent.jar -XX:MaxRAMPercentage=80"
+            - name: FQ_ENABLED
+              value: "true"
+            - name: FQ_APP_NAME
+              value: demo-app
+            - name: FQ_BASE_PACKAGES
+              value: io.github.anthonydeseille.flairquery.demo
+            - name: FQ_NPLUSONE_THRESHOLD
+              value: "5"
+            - name: FQ_SAMPLING_RATE
+              value: "1.0"
+            - name: FQ_HTTP_PORT
+              value: "9464"
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: fq-metrics
+              containerPort: 9464
+          startupProbe:
+            httpGet: {path: /actuator/health/liveness, port: http}
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: {path: /actuator/health/readiness, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /actuator/health/liveness, port: http}
+            periodSeconds: 10
+          # MISSIZED ON PURPOSE (phase 6 targets): requests far below real usage (misleading scheduling),
+          # tight CPU limit (throttling, slow startup).
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 768Mi
+          volumeMounts:
+            - name: fq-agent
+              mountPath: /fq
+              readOnly: true
+      volumes:
+        - name: fq-agent
+          emptyDir:
+            sizeLimit: 32Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-app
+  labels:
+    app.kubernetes.io/name: demo-app
+spec:
+  selector:
+    app.kubernetes.io/name: demo-app
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+    - name: fq-metrics
+      port: 9464
+      targetPort: fq-metrics

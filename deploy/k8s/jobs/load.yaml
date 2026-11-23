@@ -1,0 +1,26 @@
+# Traffic on every demo endpoint (traps + witness). __ROUNDS__ is replaced by `make load ROUNDS=n`.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fq-load
+  labels:
+    app.kubernetes.io/name: fq-load
+    app.kubernetes.io/part-of: flairquery
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fq-load
+        app.kubernetes.io/part-of: flairquery
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: load
+          image: flairquery/tools:dev
+          imagePullPolicy: IfNotPresent
+          command: ["/opt/flairquery/scripts/traffic.sh", "http://demo-app:8080", "__ROUNDS__"]
+          resources:
+            requests: {cpu: 50m, memory: 32Mi}
+            limits: {cpu: 500m, memory: 128Mi}

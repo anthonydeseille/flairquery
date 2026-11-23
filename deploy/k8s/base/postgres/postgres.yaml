@@ -1,0 +1,86 @@
+# PostgreSQL 16 with pg_stat_statements + auto_explain preloaded (log_min_duration = 0 in dev).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 4Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+        app.kubernetes.io/component: database
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          args: ["-c", "config_file=/etc/postgresql/postgresql.conf"]
+          envFrom:
+            - secretRef:
+                name: postgres-credentials
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            periodSeconds: 3
+          # Deliberately small (phase 6 targets): shared_buffers=32MB, work_mem=64kB, max_connections=50
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: config
+              mountPath: /etc/postgresql/postgresql.conf
+              subPath: postgresql.conf
+            - name: config
+              mountPath: /docker-entrypoint-initdb.d/10-init-fq.sql
+              subPath: init-fq.sql
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-data
+        - name: config
+          configMap:
+            name: postgres-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: postgres
+spec:
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

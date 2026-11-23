@@ -1,0 +1,26 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Built with `kubectl kustomize --load-restrictor=LoadRestrictionsNone` (see Makefile): the PostgreSQL
+# configuration is shared with the local Docker Compose environment (deploy/postgres).
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: flairquery
+    includeSelectors: false
+resources:
+  - postgres/postgres.yaml
+  - demo-app/demo-app.yaml
+configMapGenerator:
+  - name: postgres-config
+    files:
+      - postgresql.conf=../../postgres/postgresql-fq.conf
+      - init-fq.sql=../../postgres/init-fq.sql
+secretGenerator:
+  # dev-only credentials (kind); never reuse outside a local cluster
+  - name: postgres-credentials
+    # stable name: also referenced by the seed Job, applied outside kustomize
+    options:
+      disableNameSuffixHash: true
+    literals:
+      - POSTGRES_DB=flairquery
+      - POSTGRES_USER=flairquery
+      - POSTGRES_PASSWORD=flairquery

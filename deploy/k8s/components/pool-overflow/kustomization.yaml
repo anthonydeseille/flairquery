@@ -1,0 +1,15 @@
+# Phase 6 target: Hikari pool x replicas > max_connections (3 x 20 = 60 > 50).
+# Needs ~1.5 GB more memory in the cluster. Usage: make deploy OVERLAY=pool-overflow
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      kind: Deployment
+      name: demo-app
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 3
+      - op: replace
+        path: /spec/template/spec/containers/0/env/3/value
+        value: "20"

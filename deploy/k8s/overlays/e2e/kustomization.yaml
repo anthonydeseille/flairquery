@@ -1,0 +1,27 @@
+# fq-e2e: ephemeral (created and deleted by make e2e). No PVC: data lives in an emptyDir.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: fq-e2e
+resources:
+  - namespace.yaml
+  - ../../base
+patches:
+  - target:
+      kind: PersistentVolumeClaim
+      name: postgres-data
+    patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: postgres-data
+  - target:
+      kind: Deployment
+      name: postgres
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/volumes/0
+        value:
+          name: data
+          emptyDir:
+            sizeLimit: 3Gi

@@ -1,0 +1,7 @@
+# fq-dev: persistent, for manual testing with K9s.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: fq-dev
+resources:
+  - namespace.yaml
+  - ../../base

@@ -15,6 +15,7 @@ set -euo pipefail
 
 PROFILE="${1:-S}"
 FORCE="${2:-}"
+[ "$FORCE" = "none" ] && FORCE=""   # placeholder used by the K8s Job
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PY="${PYTHON:-python3}"
 TABLES=(publisher author book review)
