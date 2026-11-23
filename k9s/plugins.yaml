@@ -2,7 +2,8 @@
 # of k9s/fq-view.sh into each command, or copy these entries into your existing plugins.yaml and set
 # that path yourself.
 #   Shift-Q : top SQL statements of the selected pod (/fq/top)
-#   Shift-W : N+1 warnings of the selected pod (/fq/nplusone)
+#   Shift-W : findings of the selected pod (/fq/findings: N+1 with its cause, useless EAGER, over-fetching,
+#             in-memory pagination, open-in-view) then the raw N+1 warnings (/fq/nplusone)
 #   Shift-E : per-endpoint summary (/fq/endpoints)
 # On the collector pod (fq-collector-*), the same keys show: Shift-Q top statements with their exact
 # per-endpoint split, Shift-W the before/after comparison of the last two marks, Shift-E endpoints.
@@ -21,7 +22,7 @@ plugins:
       - '"__FQ_VIEW__" top "$NAME" "$NAMESPACE" "$CONTEXT"'
   flairquery-nplusone:
     shortCut: Shift-W
-    description: FlairQuery N+1
+    description: FlairQuery findings and N+1
     scopes:
       - pods
     command: bash

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Shows the FlairQuery view of a pod, readable in a terminal (used by the K9s plugin).
 #   k9s/fq-view.sh top|nplusone|endpoints <pod> <namespace> [context]
-# Application pod (agent, port 9464): top SQL / N+1 / endpoints of that pod.
+# Application pod (agent, port 9464): top SQL / findings (JPA profile) and N+1 / endpoints of that pod.
 # Collector pod (fq-collector-*, port 9465): top statements with their exact per-endpoint split / last
 # before-after comparison between marks / endpoints, over FQ_WINDOW (default 1h).
 # Opens a temporary `kubectl port-forward` - no curl needed in the image - renders the JSON with jq and
@@ -99,6 +99,21 @@ render() {
           "")'
       ;;
     nplusone)
+      # phase 3 findings first (JPA profile: cause + fix kind), then the raw N+1 list
+      local findings
+      findings=$(curl -sf -m 10 "http://127.0.0.1:$LOCAL_PORT/fq/findings" || true)
+      if [ -n "$findings" ]; then
+        jq -r '
+          "FlairQuery - findings (JPA profile)    app=\(.app)\n",
+          (if (.findings | length) == 0 then "  none" else
+            (.findings[] |
+              "[\(.severity)] \(.kind)   \(.endpoint)",
+              "    \(.title)",
+              (if .evidence.caller then "    caller: \(.evidence.caller)" else empty end),
+              "    fix:    \(.fix)",
+              "") end),
+          ""' <<<"$findings"
+      fi
       fetch "/fq/nplusone" | jq -r '
         "FlairQuery - N+1 detected (threshold: more than \(.threshold) identical statements per request)    app=\(.app)\n",
         (if (.nplusone | length) == 0 then "  none detected" else

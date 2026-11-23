@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Trap scorecard of the demo app (demo-app/TRAPS.md), from the phase 2 collector API only.
+"""Trap scorecard of the demo app (demo-app/TRAPS.md).
 
-    scripts/scorecard.py --url http://localhost:9465 [--window 1h] [--markdown out.md] [--json out.json]
+    scripts/scorecard.py --url http://localhost:9465 [--agent http://localhost:9464] [--window 1h]
+                         [--markdown out.md] [--json out.json]
 
-Each trap gets DETECTED, PARTIAL or MISSED with the evidence found; the witness gets CLEAN or FLAGGED.
-Exit code 1 when a trap scores below the level expected in phase 2 (EXPECTED below) or the witness is
-flagged. Standard library only (runs in the tools image and on a laptop).
+Phase 2 rules read the collector API (database side). With --agent, the phase 3 rules also read the
+agent's findings (/fq/findings, JPA side) and each trap keeps the best level of both; the expected
+levels are then the phase 3 ones. Each trap gets DETECTED, PARTIAL or MISSED with its evidence; the
+witness gets CLEAN or FLAGGED (by either side). Exit code 1 when a trap scores below its expected level
+or the witness is flagged. Standard library only (runs in the tools image and on a laptop).
 """
 import argparse
 import json
@@ -16,8 +19,10 @@ import urllib.request
 DETECTED, PARTIAL, MISSED, CLEAN, FLAGGED = "DETECTED", "PARTIAL", "MISSED", "CLEAN", "FLAGGED"
 RANK = {MISSED: 0, PARTIAL: 1, DETECTED: 2}
 
-# Level phase 2 must reach (ground truth: demo-app/TRAPS.md, column "Phase 2").
-EXPECTED = {1: DETECTED, 2: DETECTED, 3: PARTIAL, 4: DETECTED, 5: PARTIAL, 6: PARTIAL, 7: DETECTED}
+# Level each phase must reach (ground truth: demo-app/TRAPS.md, columns "Phase 2" and "Phase 3").
+EXPECTED_PHASE2 = {1: DETECTED, 2: DETECTED, 3: PARTIAL, 4: DETECTED, 5: PARTIAL, 6: PARTIAL, 7: DETECTED}
+EXPECTED_PHASE3 = {1: DETECTED, 2: DETECTED, 3: DETECTED, 4: DETECTED, 5: DETECTED, 6: DETECTED, 7: DETECTED}
+EXPECTED = EXPECTED_PHASE2
 
 TITLES = {
     1: "N+1 authors -> books",
@@ -210,22 +215,82 @@ def witness(d):
 TRAPS = [(1, trap1), (2, trap2), (3, trap3), (4, trap4), (5, trap5), (6, trap6), (7, trap7), (0, witness)]
 
 
+# ---------------------------------------------------------------------------------------------- phase 3 (agent)
+
+class Agent:
+    def __init__(self, url):
+        self.url = url.rstrip("/")
+        with urllib.request.urlopen(f"{self.url}/fq/findings", timeout=30) as r:
+            self.findings = json.load(r)["findings"]
+
+    def find(self, endpoint, kind, **evidence):
+        for f in self.findings:
+            if f["endpoint"] != endpoint or f["kind"] != kind:
+                continue
+            ev = f.get("evidence", {})
+            if all(v in (ev.get(k) if isinstance(ev.get(k), (list, str)) else [ev.get(k)]) for k, v in evidence.items()):
+                return f
+        return None
+
+
+def agent_rule(endpoint, kind, **evidence):
+    def rule(agent):
+        f = agent.find(endpoint, kind, **evidence)
+        if f is None:
+            return MISSED, f"no {kind} finding on {endpoint}"
+        return DETECTED, f"{f['severity']} {kind}: {f['title']}"
+    return rule
+
+
+AGENT_TRAPS = {
+    1: agent_rule("GET /authors", "N_PLUS_ONE_LAZY", association="Author.books"),
+    2: agent_rule("GET /books", "USELESS_EAGER", association="Book.publisher"),
+    3: agent_rule("GET /books/titles", "OVER_FETCHING", largeColumnsNeverRead="description"),
+    5: agent_rule("GET /authors/with-books", "IN_MEMORY_PAGINATION"),
+    6: agent_rule("GET /authors", "OPEN_IN_VIEW"),
+}
+
+
+def agent_witness(agent):
+    flagged = [f["kind"] for f in agent.findings if f["endpoint"] == "GET /publishers/{id}"]
+    return (FLAGGED, "agent findings: " + ", ".join(flagged)) if flagged else (CLEAN, "no agent finding")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--url", default="http://localhost:9465")
+    ap.add_argument("--agent", help="agent base URL: adds the phase 3 rules (JPA findings)")
     ap.add_argument("--window", default="1h")
     ap.add_argument("--markdown")
     ap.add_argument("--json")
     a = ap.parse_args()
 
     d = Data(Api(a.url, a.window))
+    agent = Agent(a.agent) if a.agent else None
+    expected_levels = EXPECTED_PHASE3 if agent else EXPECTED_PHASE2
+    phase = 3 if agent else 2
     rows, failures = [], 0
     for n, fn in TRAPS:
         try:
             status, evidence = fn(d)
         except Exception as e:  # one broken rule never hides the others
             status, evidence = (FLAGGED if n == 0 else MISSED), f"error: {e}"
-        expected = CLEAN if n == 0 else EXPECTED[n]
+        if agent is not None:
+            rule = agent_witness if n == 0 else AGENT_TRAPS.get(n)
+            if rule is not None:
+                try:
+                    a_status, a_evidence = rule(agent)
+                except Exception as e:
+                    a_status, a_evidence = (FLAGGED if n == 0 else MISSED), f"agent error: {e}"
+                if n == 0:
+                    if a_status == FLAGGED or status == FLAGGED:
+                        status = FLAGGED
+                    evidence = f"{evidence}; {a_evidence}"
+                elif RANK[a_status] > RANK[status]:
+                    status, evidence = a_status, f"{a_evidence} [database side: {evidence}]"
+                else:
+                    evidence = f"{evidence} [agent: {a_evidence}]"
+        expected = CLEAN if n == 0 else expected_levels[n]
         ok = status == CLEAN if n == 0 else RANK[status] >= RANK[expected]
         failures += 0 if ok else 1
         rows.append(dict(trap=n or "witness", title=TITLES[n], status=status, expected=expected, ok=ok,
@@ -237,7 +302,7 @@ def main():
         print(f"                {r['evidence']}")
     found = sum(1 for r in rows if r["status"] in (DETECTED, PARTIAL))
     full = sum(1 for r in rows if r["status"] == DETECTED)
-    print(f"\n  phase 2: {full}/7 traps detected, {found - full} partial, witness "
+    print(f"\n  phase {phase}: {full}/7 traps detected, {found - full} partial, witness "
           f"{rows[-1]['status'].lower()}; {failures} below expectation")
 
     if a.markdown:

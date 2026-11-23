@@ -26,7 +26,8 @@ operator: see [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Contents
 
-- [Phase 1 status](#phase-1-status) / [Phase 2 status](#phase-2-status)
+- [Phase 1 status](#phase-1-status) / [Phase 2 status](#phase-2-status) / [Phase 3 status](#phase-3-status)
+- [JPA profile and findings (phase 3)](#jpa-profile-and-findings-phase-3)
 - [Repository layout](#repository-layout)
 - [Quick start (local, no Kubernetes)](#quick-start-local-no-kubernetes)
 - [Installing the agent on an application](#installing-the-agent-on-an-application)
@@ -66,6 +67,17 @@ operator: see [docs/ROADMAP.md](docs/ROADMAP.md).
 | auto_explain | exact per-execution endpoint/caller attribution, plan shapes, values masked | ✅ |
 | pg_stats, marks, compare | value-free column statistics, named marks, before/after comparison | ✅ |
 | kind, K9s, scorecard | collector Deployment, K9s views on the collector pod, trap scorecard in the e2e | ✅ |
+
+## Phase 3 status
+
+| Step | Content | Status |
+|---|---|---|
+| Hibernate / Spring hooks | entities loaded, lazy loads, in-memory pagination (HHH90003004), transactions, open-in-view | ✅ |
+| Per-request accounting | rows read per statement, statements triggered by each lazy load | ✅ |
+| Entity model + getters | `@Entity` model from annotations (JPA default fetch types, large columns), attributes really read | ✅ |
+| Detection rules | `/fq/findings`: N+1 with its cause, useless EAGER, over-fetching, in-memory pagination, open-in-view | ✅ |
+| Collector ↔ agent | HTTP request counts from the agent, before/after comparisons per request | ✅ |
+| Scorecard, e2e, overhead, K9s | 7/7 traps detected, witness clean; findings in K9s (`Shift-W`) | ✅ |
 
 ## Repository layout
 
@@ -157,6 +169,9 @@ pgjdbc 42.7, H2 2.3, Hibernate 6.6, Spring Boot 3.5 (fat jar), Java 21 and 25.
 | `FQ_SAMPLING_RATE` | `1.0` | fraction of HTTP requests tagged and measured (decided per request) |
 | `FQ_HTTP_PORT` | `9464` | port of the agent's HTTP server (`0` = any free port) |
 | `FQ_LOG_LEVEL` | `INFO` | `DEBUG` lists instrumented classes and every HTTP request |
+| `FQ_PROFILE` | `true` | phase 3 JPA profile: Hibernate and Spring transaction hooks, rows read, `/fq/profile`, `/fq/findings` |
+| `FQ_PROFILE_ENTITIES` | `true` | entity model and getter tracking of `@Entity` classes (attributes really read); needs `FQ_PROFILE` |
+| `FQ_PROFILE_SAMPLE` | `1.0` | fraction of the sampled HTTP requests that are profiled (e.g. `0.1` in production) |
 
 An invalid value is logged and replaced by its default: configuration never prevents startup.
 
@@ -190,6 +205,9 @@ JDK HTTP server, read-only (`GET` only), on a daemon thread.
 | `/fq/top?limit=N` | top SQL statements by total time (endpoint, caller, calls, timings) |
 | `/fq/nplusone` | detected N+1 patterns |
 | `/fq/endpoints` | per-endpoint summary (HTTP requests, SQL statements, timings) |
+| `/fq/profile` | phase 3 per-endpoint JPA profile: statements, rows and SQL time per request, entities loaded and attributes read, lazy loads (inside / outside a transaction, triggering statements), in-memory pagination, open-in-view, findings |
+| `/fq/findings` | phase 3 findings of every endpoint, most severe first, each with its evidence and the kind of fix |
+| `/fq/model` | entity models read from the `@Entity` annotations (attributes, fetch types with JPA defaults, large columns) |
 | `/fq/health` | `{"status":"UP"}` |
 
 JSON responses carry `schemaVersion` (currently `1`). Every in-memory structure is bounded (500 endpoints,
@@ -365,6 +383,68 @@ measurement) and **~0.25 ms** on a single-query endpoint, i.e. 3 to 4 %. The cos
 statements, so it is highest precisely on N+1 endpoints. Use `FQ_SAMPLING_RATE` to reduce it in
 production. These figures are indicative (single client, development machine); a measurement under load
 on kind will come with the e2e step.
+
+### Phase 3 JPA profile
+
+`scripts/bench.sh` now compares three configurations: no agent, agent without the JPA profile
+(`FQ_PROFILE=false`), full agent. On the same machine, configurations **run alternately** (two rounds):
+
+| Endpoint | p50 agent without profile | p50 full agent |
+|---|---|---|
+| `/publishers/1` | 7.98 / 9.75 ms | 8.07 / 8.13 ms |
+| `/books?limit=50` | 109.97 / 119.58 ms | 113.93 / 125.53 ms |
+
+The difference stays within the run-to-run noise of a busy laptop (about ±10 % for the same
+configuration). A first sequential run (no agent, then agent, then profile) had suggested +1.4 ms on the
+witness: drift between runs, not the profile, as the alternating runs showed.
+
+**Startup under a CPU limit** (demo app image, `docker run --cpus 0.5 --memory 768m`, like the Kubernetes
+limit) is where instrumentation costs show: the first version of the profile added **about 15 s**
+(87 and 101 s instead of 79 and 77 s), because matching `java.sql.ResultSet` walked the type hierarchy of
+every class loaded. With a name pre-filter (`*ResultSet*`, then the hierarchy check) and the `@Entity`
+search limited to `FQ_BASE_PACKAGES`, three alternating pairs give **75.6 s without the profile and
+74.2 s with it** on average: no measurable startup cost left.
+
+## JPA profile and findings (phase 3)
+
+The agent explains *why* an endpoint is expensive, from the JPA / Hibernate side, per HTTP request. It
+instruments a handful of Hibernate 6 and Spring classes (the rest of `org.hibernate` stays ignored) and the
+getters of the application's `@Entity` classes:
+
+- **entities loaded** per type (`StatefulPersistenceContext#addEntity`), **lazy loads** of collections and
+  proxies, with the statements they trigger, their caller, and whether they ran outside any Spring
+  transaction;
+- **rows read** per statement (`ResultSet#next`, counted once through pool proxies);
+- **attributes really read**: the entity model is read from the annotations (JPA default fetch types,
+  `TEXT` / `@Lob` / long columns), and the getters are tracked (application code, DTO mappers, Jackson);
+- **in-memory pagination** (Hibernate's HHH90003004 warning, caught whatever the log level) and
+  **open-in-view**.
+
+`GET /fq/findings` turns this into findings with their evidence and the kind of fix (the fix itself is
+phase 4's job, proven before being proposed):
+
+| Finding | Rule | Kind of fix |
+|---|---|---|
+| `N_PLUS_ONE_LAZY` | a lazy association loaded more than `FQ_NPLUSONE_THRESHOLD` times per request | `@EntityGraph` / `JOIN FETCH`, or `@BatchSize` |
+| `USELESS_EAGER` | an EAGER association (explicit or JPA default) never read while its targets are loaded | `fetch = LAZY` |
+| `OVER_FETCHING` | entities whose large columns, or most columns, are never read | DTO / interface projection |
+| `IN_MEMORY_PAGINATION` | HHH90003004 on the request | page the ids, then fetch |
+| `OPEN_IN_VIEW` | lazy loads outside any transaction while open-in-view is active | `spring.jpa.open-in-view=false` + load in the service |
+
+```
+[HIGH] N_PLUS_ONE_LAZY   GET /authors
+    N+1: Author.books is loaded lazily 20 times per request
+    caller: io.github.anthonydeseille.flairquery.demo.web.AuthorController#toDto:47
+    fix:    Fetch it with the parent query (@EntityGraph(attributePaths = "books") or JOIN FETCH), or batch it (@BatchSize / hibernate.default_batch_fetch_size)
+
+[HIGH] USELESS_EAGER   GET /books
+    Book.publisher is loaded EAGERly but never read: 49 Publisher per request for nothing
+    fix:    Make it lazy: @ManyToOne(fetch = FetchType.LAZY), and fetch it explicitly where it is needed
+```
+
+With `FQ_COLLECTOR_AGENT_URL`, the collector also reads the agent's HTTP request counts, so before/after
+comparisons are given **per request** (profile M, 1 traffic round before the index of trap 4 and 2 after:
+`GET /reviews/search` 3,540 -> 3 ms of SQL per request, statements per request unchanged elsewhere).
 
 ## Collector (phase 2)
 
@@ -589,7 +669,7 @@ On the **pods** view, select the demo app pod:
 | Shortcut | View |
 |---|---|
 | `Shift-Q` | top SQL statements by total time (`/fq/top`): endpoint, caller, calls, timings |
-| `Shift-W` | N+1 warnings (`/fq/nplusone`): endpoint, caller, queries per request |
+| `Shift-W` | findings (`/fq/findings`: severity, cause, caller, kind of fix), then the N+1 warnings (`/fq/nplusone`) |
 | `Shift-E` | per-endpoint summary (`/fq/endpoints`) |
 
 (`Shift-T` and `Shift-N` are already bound by K9s in the pods view: sort by restarts and by name.)
@@ -710,11 +790,20 @@ every minute so that it never grows with the application's lifetime.
 10. **`auto_explain` in dev** (`log_min_duration=0`) produces very large logs. Before the fix, one profile M
     load wrote 14 GB of server logs: seeding now disables `auto_explain` for its session, and the local
     container caps its logs.
-11. **Before/after comparisons are totals per period**: the database does not know how many HTTP requests
-    ran, so compare periods that ran the same traffic. Per-request figures come with the phase 3 endpoint
-    profile.
+11. **Before/after comparisons**: per request only when the collector reads the agent
+    (`FQ_COLLECTOR_AGENT_URL`); otherwise totals per period, comparable for the same traffic only. One agent
+    URL: with several replicas behind a Service, only the replica answering is counted.
 12. **Collector: single target** (one database, one service); multi-service is planned
     ([ROADMAP](docs/ROADMAP.md)).
+13. **JPA profile: Hibernate 6 and `jakarta.persistence` only** (Spring Boot 3). Hibernate 5 / `javax` are not
+    supported (the hooks are not installed, the rest of the agent works).
+14. **Attributes read are seen through getters**: a field read directly inside the entity (or through
+    reflection) is not seen. With property access (`@Id` on a getter) Hibernate calls the getters itself:
+    those entities are modelled but not tracked. Transactions are tracked through `@Transactional` and
+    `TransactionTemplate` boundaries (propagation settings are not interpreted).
+15. **Rows read are counted on result set classes whose name contains `ResultSet`** (`PgResultSet`,
+    `HikariProxyResultSet`, `JdbcResultSet`, `ResultSetImpl`...): a name pre-filter that keeps startup cheap.
+    A driver naming its result sets otherwise would not have its rows counted (everything else works).
 
 ## Data license
 

@@ -27,13 +27,21 @@ Phase 2 targets a single service. Planned evolution for microservices:
 - Cross-service call chains (service A calls B, which runs the N+1) need distributed tracing
   (propagated trace id); out of scope until then.
 
-## Phase 3 — Per-endpoint profile
+## Phase 3 — Per-endpoint profile (done)
 - Per endpoint: number of statements, SQL time, rows returned, entities loaded vs used
 - Useless EAGER detection:
   - static: scan of mappings (`@ManyToOne` / `@OneToOne` EAGER by default)
   - dynamic: instrumentation of association getters → association loaded but never read
 - Over-fetching detection (full entities loaded vs serialized fields)
 - Detection of `JOIN FETCH` + pagination and `open-in-view=true`
+
+Delivered in the agent (Hibernate 6 / jakarta): entities loaded, lazy loads with the statements they
+trigger and whether they ran outside a transaction, rows read, attributes read through the entity getters,
+an entity model from the annotations, HHH90003004 and open-in-view hooks; `/fq/findings` (N+1 with its
+cause, useless EAGER, over-fetching, in-memory pagination, open-in-view) with evidence and the kind of fix;
+the collector reads the agent's request counts for per-request comparisons. Trap scorecard: 7/7 detected,
+witness clean. Inputs for phase 4: each finding's evidence (association, caller, attributes read,
+statements), the plans and the column selectivity from phase 2.
 
 ## Phase 4 — LLM analyzer
 - Inputs: source code (entity, repository, service), plan, schema, endpoint profile

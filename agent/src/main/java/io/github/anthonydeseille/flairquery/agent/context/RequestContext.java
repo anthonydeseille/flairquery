@@ -17,10 +17,34 @@ public final class RequestContext {
     public int transactionDepth;
     /** OpenEntityManagerInViewInterceptor ran for this request. */
     public boolean openInView;
-    /** Lazy loads in progress (collection role / entity name), innermost last. */
-    public final java.util.ArrayDeque<String> lazyLoading = new java.util.ArrayDeque<>(4);
-    /** Result sets of this request's measured executions -> their statement entry (rows read). */
-    public final java.util.IdentityHashMap<Object, RequestStats.Entry> resultSets = new java.util.IdentityHashMap<>();
+    /** Lazy loads in progress (collection role / entity name), innermost last; created on first use. */
+    private java.util.ArrayDeque<String> lazyLoading;
+    /** Result sets of this request's measured executions -> their statement entry; created on first use. */
+    private java.util.IdentityHashMap<Object, RequestStats.Entry> resultSets;
+
+    public java.util.ArrayDeque<String> lazyLoading() {
+        if (lazyLoading == null) lazyLoading = new java.util.ArrayDeque<>(4);
+        return lazyLoading;
+    }
+
+    /** Innermost lazy load in progress, or null. */
+    public String currentLazyLoad() {
+        return lazyLoading == null ? null : lazyLoading.peekLast();
+    }
+
+    public java.util.IdentityHashMap<Object, RequestStats.Entry> resultSets() {
+        if (resultSets == null) resultSets = new java.util.IdentityHashMap<>();
+        return resultSets;
+    }
+
+    /** Statement entry of a registered result set, or null (unknown result sets included). */
+    public RequestStats.Entry resultSetEntry(Object resultSet) {
+        return resultSets == null ? null : resultSets.get(resultSet);
+    }
+
+    public boolean knowsResultSet(Object resultSet) {
+        return resultSets != null && resultSets.containsKey(resultSet);
+    }
     /** Fast path: the result set read last (Hibernate reads one result set at a time). */
     public Object lastResultSet;
     public RequestStats.Entry lastResultSetEntry;

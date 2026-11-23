@@ -42,6 +42,7 @@ import static net.bytebuddy.matcher.ElementMatchers.isAnnotatedWith;
 import static net.bytebuddy.matcher.ElementMatchers.isStatic;
 import static net.bytebuddy.matcher.ElementMatchers.isInterface;
 import static net.bytebuddy.matcher.ElementMatchers.isSynthetic;
+import static net.bytebuddy.matcher.ElementMatchers.nameContains;
 import static net.bytebuddy.matcher.ElementMatchers.nameStartsWith;
 import static net.bytebuddy.matcher.ElementMatchers.named;
 import static net.bytebuddy.matcher.ElementMatchers.namedOneOf;
@@ -221,7 +222,8 @@ public final class FqAgent {
         if (config.profileEntities()) {
             builder = builder
                     // phase 3: model of every @Entity (read from its annotations) + getter tracking
-                    .type(isAnnotatedWith(named("jakarta.persistence.Entity")).and(not(isInterface())))
+                    .type(inPackages(config.basePackages())
+                            .and(isAnnotatedWith(named("jakarta.persistence.Entity"))).and(not(isInterface())))
                     .transform((b, type, loader, module, domain) -> {
                         EntityModels.register(EntityModelReader.read(type));
                         return b;
@@ -234,7 +236,10 @@ public final class FqAgent {
         }
         return builder
                 // phase 3: rows read (only result sets registered by a measured execution are counted)
-                .type(not(isInterface()).and(hasSuperType(named("java.sql.ResultSet"))))
+                // name pre-filter first: hasSuperType walks the whole hierarchy of every class it is asked about,
+                // which measurably slowed startup under a CPU limit (+15 s at 0.5 CPU). Driver and pool result sets
+                // carry the name (PgResultSet, HikariProxyResultSet, JdbcResultSet, ResultSetImpl, ...).
+                .type(nameContains("ResultSet").and(not(isInterface())).and(hasSuperType(named("java.sql.ResultSet"))))
                 .transform(new AgentBuilder.Transformer.ForAdvice()
                         .advice(named("next").and(takesArguments(0)).and(returns(boolean.class)).and(not(isAbstract())),
                                 ResultSetNextAdvice.class.getName()))
@@ -265,6 +270,18 @@ public final class FqAgent {
                 .type(named(SPRING_HOOKS[2]))
                 .transform(new AgentBuilder.Transformer.ForAdvice()
                         .advice(named("preHandle").and(takesArguments(1)), OpenInViewAdvice.class.getName()));
+    }
+
+    /** Types of the application packages (FQ_BASE_PACKAGES); every type when none is configured. */
+    static ElementMatcher.Junction<TypeDescription> inPackages(java.util.List<String> packages) {
+        if (packages.isEmpty()) {
+            return net.bytebuddy.matcher.ElementMatchers.any();
+        }
+        ElementMatcher.Junction<TypeDescription> m = net.bytebuddy.matcher.ElementMatchers.none();
+        for (String p : packages) {
+            m = m.or(nameStartsWith(p + "."));
+        }
+        return m;
     }
 
     private static AgentBuilder baseBuilder() {

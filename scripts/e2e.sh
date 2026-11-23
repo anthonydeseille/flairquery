@@ -2,7 +2,9 @@
 # End-to-end test on the local cluster (kind by default):
 #   ephemeral namespace fq-e2e -> deploy (overlay e2e) -> corpus (profile M) -> pods Ready -> traffic
 #   -> assertions on /fq/top, /fq/nplusone, /metrics and the fq: tag in pg_stat_statements
-#   -> phase 2: collector health, then the trap scorecard (scripts/scorecard.py) from the collector API.
+#   -> phase 2: collector health and its link to the agent (HTTP request counts)
+#   -> phase 3: JPA profile findings of the agent
+#   -> trap scorecard (scripts/scorecard.py): collector API (database side) + agent findings (JPA side).
 # The namespace is ALWAYS deleted at the end, even on failure (trap), unless E2E_KEEP=1.
 #
 #   make e2e                      # full run (builds images)
@@ -127,13 +129,24 @@ CMETRICS=$(curl -sf "localhost:$CPORT/metrics")
 check "collector: mark set after the traffic (cycle run on demand)" jq -e '.name == "e2e-traffic-done"' <<<"$MARK"
 check "collector: no failed cycle" grep -q '^fq_collector_cycle_errors{target="postgres"} 0' <<<"$CMETRICS"
 check "collector: server log fully read (lag 0)" grep -q '^fq_collector_log_lag_bytes{target="postgres"} 0' <<<"$CMETRICS"
+check "collector: agent read on the last cycle (HTTP request counts)" grep -q '^fq_collector_agent_up{target="postgres"} 1' <<<"$CMETRICS"
+CEPS=$(curl -sf "localhost:$CPORT/fq/collector/endpoints?window=2h")
+check "collector: per-request figures for GET /authors" \
+  jq -e 'any(.endpoints[]; .endpoint == "GET /authors" and .httpRequests > 0 and .executionsPerRequest >= 20)' <<<"$CEPS"
 check "collector: never connects as anything but fq_reader" \
   test "$(psql_q "select count(*) from pg_stat_activity where application_name = 'flairquery-collector' and usename <> 'fq_reader'")" = 0
 
-log "phase 2: trap scorecard (demo-app/TRAPS.md)"
+log "phase 3: agent findings"
+FINDINGS=$(curl -sf "localhost:$PORT/fq/findings")
+check "agent: N+1 traced back to Author.books with its caller" \
+  jq -e --arg c "$DEMO.web.AuthorController#toDto:" 'any(.findings[]; .kind == "N_PLUS_ONE_LAZY" and .evidence.association == "Author.books" and (.evidence.caller | startswith($c)))' <<<"$FINDINGS"
+check "agent: no finding on the witness" jq -e 'all(.findings[]; .endpoint != "GET /publishers/{id}")' <<<"$FINDINGS"
+
+log "trap scorecard (demo-app/TRAPS.md): collector + agent"
 mkdir -p target
-if python3 scripts/scorecard.py --url "http://localhost:$CPORT" --window 2h --markdown target/e2e-scorecard.md; then
-  pass "every trap reaches its phase 2 level, the witness is never flagged"
+if python3 scripts/scorecard.py --url "http://localhost:$CPORT" --agent "http://localhost:$PORT" --window 2h \
+     --markdown target/e2e-scorecard.md; then
+  pass "every trap reaches its phase 3 level, the witness is never flagged"
 else
   fail "trap scorecard below expectations (see above)"
 fi

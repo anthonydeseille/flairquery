@@ -122,12 +122,12 @@ public final class FqRuntime implements FqHooks {
                 ? new SqlNormalizer.Parsed(UNKNOWN_SQL, SqlTag.UNKNOWN)
                 : normalizer.parse(text);
         if (ctx != null) {
-            String lazyRole = ctx.profiled() ? ctx.lazyLoading.peekLast() : null;
+            String lazyRole = ctx.profiled() ? ctx.currentLazyLoad() : null;
             RequestStats.Entry entry = ctx.stats().record(parsed.normalizedSql(), parsed.caller(), nanos,
                     thrown != null, lazyRole);
             if (ctx.profiled() && result instanceof java.sql.ResultSet) {
-                if (ctx.resultSets.size() < MAX_RESULT_SETS) {
-                    ctx.resultSets.put(result, entry);
+                if (ctx.resultSets().size() < MAX_RESULT_SETS) {
+                    ctx.resultSets().put(result, entry);
                 }
                 ctx.lastResultSet = result;
                 ctx.lastResultSetEntry = entry;
@@ -229,10 +229,10 @@ public final class FqRuntime implements FqHooks {
             ctx.stats().rowRead(ctx.lastResultSetEntry);
             return;
         }
-        if (!ctx.resultSets.containsKey(resultSet)) {
+        if (!ctx.knowsResultSet(resultSet)) {
             return;     // driver result set behind a pool proxy, or not produced by a measured execution
         }
-        RequestStats.Entry entry = ctx.resultSets.get(resultSet);
+        RequestStats.Entry entry = ctx.resultSetEntry(resultSet);
         ctx.lastResultSet = resultSet;
         ctx.lastResultSetEntry = entry;
         ctx.stats().rowRead(entry);
@@ -244,7 +244,7 @@ public final class FqRuntime implements FqHooks {
         if (ctx == null) {
             return -1L;
         }
-        ctx.lazyLoading.addLast(role == null ? SqlTag.UNKNOWN : role);
+        ctx.lazyLoading().addLast(role == null ? SqlTag.UNKNOWN : role);
         return System.nanoTime();
     }
 
@@ -254,7 +254,7 @@ public final class FqRuntime implements FqHooks {
         if (ctx == null) {
             return;
         }
-        ctx.lazyLoading.pollLast();
+        ctx.lazyLoading().pollLast();
         String caller = callerResolver.resolve();
         ctx.stats().lazyLoaded(kind, role == null ? SqlTag.UNKNOWN : role, System.nanoTime() - start,
                 ctx.transactionDepth == 0, caller);
