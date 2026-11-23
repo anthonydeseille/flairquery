@@ -1,0 +1,156 @@
+{
+  "schemaVersion": 1,
+  "app": "demo-app",
+  "generatedAt": "2026-11-23T21:18:27.841177Z",
+  "entities": [
+    {
+      "entity": "io.github.anthonydeseille.flairquery.demo.domain.Author",
+      "propertyAccess": false,
+      "attributes": [
+        {
+          "name": "id",
+          "kind": "ID",
+          "type": "java.lang.Long"
+        },
+        {
+          "name": "name",
+          "kind": "BASIC",
+          "type": "java.lang.String"
+        },
+        {
+          "name": "birthDate",
+          "kind": "BASIC",
+          "type": "java.time.LocalDate"
+        },
+        {
+          "name": "bio",
+          "kind": "BASIC",
+          "type": "java.lang.String",
+          "large": true
+        },
+        {
+          "name": "olKey",
+          "kind": "BASIC",
+          "type": "java.lang.String"
+        },
+        {
+          "name": "books",
+          "kind": "TO_MANY",
+          "type": "java.util.List",
+          "fetch": "LAZY",
+          "fetchExplicit": false,
+          "target": "io.github.anthonydeseille.flairquery.demo.domain.Book"
+        }
+      ]
+    },
+    {
+      "entity": "io.github.anthonydeseille.flairquery.demo.domain.Book",
+      "propertyAccess": false,
+      "attributes": [
+        {
+          "name": "id",
+          "kind": "ID",
+          "type": "java.lang.Long"
+        },
+        {
+          "name": "title",
+          "kind": "BASIC",
+          "type": "java.lang.String"
+        },
+        {
+          "name": "isbn",
+          "kind": "BASIC",
+          "type": "java.lang.String"
+        },
+        {
+          "name": "publicationYear",
+          "kind": "BASIC",
+          "type": "java.lang.Integer"
+        },
+        {
+          "name": "description",
+          "kind": "BASIC",
+          "type": "java.lang.String",
+          "large": true
+        },
+        {
+          "name": "author",
+          "kind": "TO_ONE",
+          "type": "io.github.anthonydeseille.flairquery.demo.domain.Author",
+          "fetch": "LAZY",
+          "fetchExplicit": true,
+          "target": "io.github.anthonydeseille.flairquery.demo.domain.Author"
+        },
+        {
+          "name": "publisher",
+          "kind": "TO_ONE",
+          "type": "io.github.anthonydeseille.flairquery.demo.domain.Publisher",
+          "fetch": "EAGER",
+          "fetchExplicit": false,
+          "target": "io.github.anthonydeseille.flairquery.demo.domain.Publisher"
+        }
+      ]
+    },
+    {
+      "entity": "io.github.anthonydeseille.flairquery.demo.domain.Publisher",
+      "propertyAccess": false,
+      "attributes": [
+        {
+          "name": "id",
+          "kind": "ID",
+          "type": "java.lang.Long"
+        },
+        {
+          "name": "name",
+          "kind": "BASIC",
+          "type": "java.lang.String"
+        },
+        {
+          "name": "country",
+          "kind": "BASIC",
+          "type": "java.lang.String"
+        }
+      ]
+    },
+    {
+      "entity": "io.github.anthonydeseille.flairquery.demo.domain.Review",
+      "propertyAccess": false,
+      "attributes": [
+        {
+          "name": "id",
+          "kind": "ID",
+          "type": "java.lang.Long"
+        },
+        {
+          "name": "book",
+          "kind": "TO_ONE",
+          "type": "io.github.anthonydeseille.flairquery.demo.domain.Book",
+          "fetch": "LAZY",
+          "fetchExplicit": true,
+          "target": "io.github.anthonydeseille.flairquery.demo.domain.Book"
+        },
+        {
+          "name": "rating",
+          "kind": "BASIC",
+          "type": "short"
+        },
+        {
+          "name": "reviewerName",
+          "kind": "BASIC",
+          "type": "java.lang.String"
+        },
+        {
+          "name": "comment",
+          "kind": "BASIC",
+          "type": "java.lang.String",
+          "large": true
+        },
+        {
+          "name": "createdAt",
+          "kind": "BASIC",
+          "type": "java.time.Instant"
+        }
+      ]
+    }
+  ]
+}

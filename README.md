@@ -85,6 +85,7 @@ operator: see [docs/ROADMAP.md](docs/ROADMAP.md).
 flairquery/
 ├── core/           flairquery-core: shared fq: tag format/parser and SQL normalizer (no dependency)
 ├── collector/      flairquery-collector: phase 2 PostgreSQL collector
+├── analyzer/       flairquery-analyzer: phase 4 fix proposals, proven before being proposed (in progress)
 ├── agent/          flairquery-agent: Java 21 agent (relocated ByteBuddy, dependency-free shaded jar)
 ├── demo-app/       flairquery-demo-app: target Spring Boot app, traps documented in TRAPS.md
 ├── it/             flairquery-it: integration tests (Testcontainers + real agent)
@@ -445,6 +446,22 @@ phase 4's job, proven before being proposed):
 With `FQ_COLLECTOR_AGENT_URL`, the collector also reads the agent's HTTP request counts, so before/after
 comparisons are given **per request** (profile M, 1 traffic round before the index of trap 4 and 2 after:
 `GET /reviews/search` 3,540 -> 3 ms of SQL per request, statements per request unchanged elsewhere).
+
+## Analyzer (phase 4, in progress)
+
+`flairquery-analyzer` turns every finding into an **evidence bundle**: the finding (agent JPA side, or
+database side derived from the collector: `MISSING_INDEX`, `SORT_SPILL`), the endpoint's statements with
+their cost and callers, and the **source files a fix would touch**, each with its role (entity, caller with
+its line, repository, migration, configuration). No LLM is involved in this step.
+
+```bash
+make demo-local && make collector-local && make traffic-local    # three terminals, as above
+make analyze-local                                               # -> target/analysis/<id>.json + index.json
+```
+
+Next steps: the prover (apply a fix on a copy, rebuild, rerun every endpoint, identical JSON, fewer
+statements and less SQL time per request), deterministic fixes, then LLM-generated fixes, never proposed
+without that proof.
 
 ## Collector (phase 2)
 

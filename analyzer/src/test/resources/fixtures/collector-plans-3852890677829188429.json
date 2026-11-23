@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "target": "local",
+  "window": "15m",
+  "generatedAt": "2026-11-23T21:18:28.572700Z",
+  "plans": [
+    {
+      "database": "flairquery",
+      "fingerprint": "69a291acab3bf11a30d5d9f2",
+      "summary": {
+        "sorts": [],
+        "hasLimit": true,
+        "planRows": 6,
+        "seqScans": [],
+        "nodeTypes": [
+          "Gather Merge",
+          "Index Scan",
+          "Limit"
+        ],
+        "totalCost": 16526.7,
+        "filteredScans": [
+          {
+            "node": "Index Scan",
+            "index": "review_pkey",
+            "filter": "((reviewer_name)::text = (?)::text)",
+            "relation": "review"
+          }
+        ]
+      },
+      "executions": 15,
+      "firstSeen": "2026-11-23T16:00:28.262545Z",
+      "lastSeen": "2026-11-23T21:18:24.470869Z"
+    },
+    {
+      "database": "flairquery",
+      "fingerprint": "000a268d7a17aefc02ce9d05",
+      "summary": {
+        "sorts": [
+          {
+            "keys": [
+              "id"
+            ]
+          }
+        ],
+        "hasLimit": true,
+        "planRows": 6,
+        "seqScans": [],
+        "nodeTypes": [
+          "Bitmap Heap Scan",
+          "Bitmap Index Scan",
+          "Limit",
+          "Sort"
+        ],
+        "totalCost": 246.83,
+        "filteredScans": []
+      },
+      "executions": 7,
+      "firstSeen": "2026-11-23T16:01:43.131057Z",
+      "lastSeen": "2026-11-23T19:14:55.899935Z"
+    }
+  ]
+}

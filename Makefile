@@ -59,6 +59,11 @@ compare: ## Compare two periods on the local collector (BEFORE=<mark|from..to> A
 scorecard-local: ## Trap scorecard from the local collector (WINDOW=1h); run make traffic-local first
 	python3 scripts/scorecard.py --url http://localhost:$(or $(COLLECTOR_PORT),9465) --window $(or $(WINDOW),1h)
 
+.PHONY: analyze-local
+analyze-local: ## Evidence bundle per finding (phase 4) from the local agent + collector -> target/analysis
+	java -jar analyzer/target/flairquery-analyzer.jar bundle --agent http://localhost:9464 \
+	  --collector http://localhost:$(or $(COLLECTOR_PORT),9465) --source demo-app --out target/analysis --window $(or $(WINDOW),1h)
+
 .PHONY: openlibrary
 openlibrary: ## Stream Open Library dumps and cache a small subset (~/.cache/flairquery/openlibrary)
 	python3 -I corpus/openlibrary/fetch.py $(OL_ARGS)

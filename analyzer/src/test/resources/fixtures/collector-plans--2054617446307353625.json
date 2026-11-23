@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "target": "local",
+  "window": "15m",
+  "generatedAt": "2026-11-23T21:18:28.484532Z",
+  "plans": [
+    {
+      "database": "flairquery",
+      "fingerprint": "cbc47bc8f9048397e5b77f5c",
+      "summary": {
+        "sorts": [
+          {
+            "keys": [
+              "created_at DESC",
+              "comment"
+            ]
+          }
+        ],
+        "hasLimit": true,
+        "planRows": 50,
+        "seqScans": [
+          {
+            "planRows": 1250001,
+            "relation": "review"
+          }
+        ],
+        "nodeTypes": [
+          "Gather Merge",
+          "Limit",
+          "Seq Scan",
+          "Sort"
+        ],
+        "totalCost": 898960.83,
+        "filteredScans": []
+      },
+      "executions": 21,
+      "firstSeen": "2026-11-23T16:00:38.691869Z",
+      "lastSeen": "2026-11-23T19:23:38.198524Z"
+    }
+  ]
+}

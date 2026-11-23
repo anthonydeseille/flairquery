@@ -1,0 +1,247 @@
+{
+  "schemaVersion": 1,
+  "app": "demo-app",
+  "generatedAt": "2026-11-23T21:18:27.786783Z",
+  "findings": [
+    {
+      "endpoint": "GET /authors",
+      "kind": "N_PLUS_ONE_LAZY",
+      "severity": "HIGH",
+      "title": "N+1: Author.books is loaded lazily 20 times per request",
+      "evidence": {
+        "association": "Author.books",
+        "lazyLoadsPerRequest": 20.0,
+        "maxPerRequest": 20,
+        "caller": "io.github.anthonydeseille.flairquery.demo.web.AuthorController#toDto:47",
+        "statements": [
+          {
+            "perRequest": 20.0,
+            "sql": "select b1_0.author_id,b1_0.id,b1_0.description,b1_0.isbn,b1_0.publication_year,p1_0.id,p1_0.country,p1_0.name,b1_0.title from book b1_0 left join publisher p1_0 on p1_0.id=b1_0.publisher_id where b1_0.author_id=?",
+            "timeMs": 188.777
+          }
+        ]
+      },
+      "fix": "Fetch it with the parent query (@EntityGraph(attributePaths = \"books\") or JOIN FETCH), or batch it (@BatchSize / hibernate.default_batch_fetch_size)"
+    },
+    {
+      "endpoint": "GET /authors",
+      "kind": "USELESS_EAGER",
+      "severity": "HIGH",
+      "title": "Book.publisher is loaded EAGERly but never read: 3097 Publisher per request for nothing",
+      "evidence": {
+        "association": "Book.publisher",
+        "fetch": "EAGER (JPA default for @ManyToOne / @OneToOne)",
+        "readRatio": 0.0,
+        "targetEntitiesLoadedPerRequest": 3097.0,
+        "target": "io.github.anthonydeseille.flairquery.demo.domain.Publisher"
+      },
+      "fix": "Make it lazy: @ManyToOne(fetch = FetchType.LAZY), and fetch it explicitly where it is needed"
+    },
+    {
+      "endpoint": "GET /authors",
+      "kind": "OVER_FETCHING",
+      "severity": "HIGH",
+      "title": "5031 Book loaded per request, 1 of 4 columns read, large [description] never read",
+      "evidence": {
+        "entity": "io.github.anthonydeseille.flairquery.demo.domain.Book",
+        "loadedPerRequest": 5031.0,
+        "columnsRead": [
+          "title"
+        ],
+        "columnsNeverRead": [
+          "isbn",
+          "publicationYear",
+          "description"
+        ],
+        "largeColumnsNeverRead": [
+          "description"
+        ]
+      },
+      "fix": "Select only what is used: a DTO or interface projection (select new ...(e.title)) instead of the entity"
+    },
+    {
+      "endpoint": "GET /authors/with-books",
+      "kind": "USELESS_EAGER",
+      "severity": "HIGH",
+      "title": "Book.publisher is loaded EAGERly but never read: 4904 Publisher per request for nothing",
+      "evidence": {
+        "association": "Book.publisher",
+        "fetch": "EAGER (JPA default for @ManyToOne / @OneToOne)",
+        "readRatio": 0.0,
+        "targetEntitiesLoadedPerRequest": 4904.0,
+        "target": "io.github.anthonydeseille.flairquery.demo.domain.Publisher"
+      },
+      "fix": "Make it lazy: @ManyToOne(fetch = FetchType.LAZY), and fetch it explicitly where it is needed"
+    },
+    {
+      "endpoint": "GET /authors/with-books",
+      "kind": "OVER_FETCHING",
+      "severity": "HIGH",
+      "title": "21257 Book loaded per request, 1 of 4 columns read, large [description] never read",
+      "evidence": {
+        "entity": "io.github.anthonydeseille.flairquery.demo.domain.Book",
+        "loadedPerRequest": 21257.0,
+        "columnsRead": [
+          "title"
+        ],
+        "columnsNeverRead": [
+          "isbn",
+          "publicationYear",
+          "description"
+        ],
+        "largeColumnsNeverRead": [
+          "description"
+        ]
+      },
+      "fix": "Select only what is used: a DTO or interface projection (select new ...(e.title)) instead of the entity"
+    },
+    {
+      "endpoint": "GET /authors/with-books",
+      "kind": "OVER_FETCHING",
+      "severity": "HIGH",
+      "title": "12476 Author loaded per request, 1 of 4 columns read, large [bio] never read",
+      "evidence": {
+        "entity": "io.github.anthonydeseille.flairquery.demo.domain.Author",
+        "loadedPerRequest": 12476.0,
+        "columnsRead": [
+          "name"
+        ],
+        "columnsNeverRead": [
+          "birthDate",
+          "bio",
+          "olKey"
+        ],
+        "largeColumnsNeverRead": [
+          "bio"
+        ]
+      },
+      "fix": "Select only what is used: a DTO or interface projection (select new ...(e.name)) instead of the entity"
+    },
+    {
+      "endpoint": "GET /authors/with-books",
+      "kind": "IN_MEMORY_PAGINATION",
+      "severity": "HIGH",
+      "title": "JOIN FETCH + pagination: every matching row is read, then paginated in memory (26162 rows read per request)",
+      "evidence": {
+        "requestsWithInMemoryPagination": 1,
+        "profiledRequests": 1,
+        "warning": "HHH90003004: firstResult/maxResults specified with collection fetch; applying in memory",
+        "statement": "select distinct a1_0.id,a1_0.bio,a1_0.birth_date,b1_0.author_id,b1_0.id,b1_0.description,b1_0.isbn,b1_0.publication_year,b1_0.publisher_id,b1_0.title,a1_0.name,a1_0.ol_key from author a1_0 join book b1_0 on a1_0.id=b1_0.author_id where a1_0.name like (?||?) escape ? order by a1_0.id",
+        "rowsReadPerExecution": 21257.0,
+        "rowsReadPerRequest": 26162.0
+      },
+      "fix": "Page the root ids first (query with LIMIT), then fetch the collection for those ids (JOIN FETCH ... WHERE id IN :ids), or @EntityGraph + @BatchSize"
+    },
+    {
+      "endpoint": "GET /books",
+      "kind": "USELESS_EAGER",
+      "severity": "HIGH",
+      "title": "Book.publisher is loaded EAGERly but never read: 49 Publisher per request for nothing",
+      "evidence": {
+        "association": "Book.publisher",
+        "fetch": "EAGER (JPA default for @ManyToOne / @OneToOne)",
+        "readRatio": 0.0,
+        "targetEntitiesLoadedPerRequest": 49.0,
+        "target": "io.github.anthonydeseille.flairquery.demo.domain.Publisher"
+      },
+      "fix": "Make it lazy: @ManyToOne(fetch = FetchType.LAZY), and fetch it explicitly where it is needed"
+    },
+    {
+      "endpoint": "GET /books/titles",
+      "kind": "USELESS_EAGER",
+      "severity": "HIGH",
+      "title": "Book.publisher is loaded EAGERly but never read: 3084 Publisher per request for nothing",
+      "evidence": {
+        "association": "Book.publisher",
+        "fetch": "EAGER (JPA default for @ManyToOne / @OneToOne)",
+        "readRatio": 0.0,
+        "targetEntitiesLoadedPerRequest": 3084.0,
+        "target": "io.github.anthonydeseille.flairquery.demo.domain.Publisher"
+      },
+      "fix": "Make it lazy: @ManyToOne(fetch = FetchType.LAZY), and fetch it explicitly where it is needed"
+    },
+    {
+      "endpoint": "GET /books/titles",
+      "kind": "OVER_FETCHING",
+      "severity": "HIGH",
+      "title": "5000 Book loaded per request, 1 of 4 columns read, large [description] never read",
+      "evidence": {
+        "entity": "io.github.anthonydeseille.flairquery.demo.domain.Book",
+        "loadedPerRequest": 5000.0,
+        "columnsRead": [
+          "title"
+        ],
+        "columnsNeverRead": [
+          "isbn",
+          "publicationYear",
+          "description"
+        ],
+        "largeColumnsNeverRead": [
+          "description"
+        ]
+      },
+      "fix": "Select only what is used: a DTO or interface projection (select new ...(e.title)) instead of the entity"
+    },
+    {
+      "endpoint": "GET /authors",
+      "kind": "OVER_FETCHING",
+      "severity": "MEDIUM",
+      "title": "20 Author loaded per request, 1 of 4 columns read, large [bio] never read",
+      "evidence": {
+        "entity": "io.github.anthonydeseille.flairquery.demo.domain.Author",
+        "loadedPerRequest": 20.0,
+        "columnsRead": [
+          "name"
+        ],
+        "columnsNeverRead": [
+          "birthDate",
+          "bio",
+          "olKey"
+        ],
+        "largeColumnsNeverRead": [
+          "bio"
+        ]
+      },
+      "fix": "Select only what is used: a DTO or interface projection (select new ...(e.name)) instead of the entity"
+    },
+    {
+      "endpoint": "GET /authors",
+      "kind": "OPEN_IN_VIEW",
+      "severity": "MEDIUM",
+      "title": "Lazy loading outside any transaction, kept alive by open-in-view (spring.jpa.open-in-view)",
+      "evidence": {
+        "openInViewRequests": 1,
+        "lazyLoadsOutsideTransaction": [
+          {
+            "caller": "io.github.anthonydeseille.flairquery.demo.web.AuthorController#toDto:47",
+            "loadsOutsideTransaction": 20,
+            "association": "Author.books"
+          }
+        ]
+      },
+      "fix": "Set spring.jpa.open-in-view=false and load what the response needs inside the @Transactional service (fetch plan or DTO projection)"
+    },
+    {
+      "endpoint": "GET /books",
+      "kind": "OVER_FETCHING",
+      "severity": "MEDIUM",
+      "title": "50 Book loaded per request, 3 of 4 columns read, large [description] never read",
+      "evidence": {
+        "entity": "io.github.anthonydeseille.flairquery.demo.domain.Book",
+        "loadedPerRequest": 50.0,
+        "columnsRead": [
+          "title",
+          "isbn",
+          "publicationYear"
+        ],
+        "columnsNeverRead": [
+          "description"
+        ],
+        "largeColumnsNeverRead": [
+          "description"
+        ]
+      },
+      "fix": "Select only what is used: a DTO or interface projection (select new ...(e.title, e.isbn, e.publicationYear)) instead of the entity"
+    }
+  ]
+}
