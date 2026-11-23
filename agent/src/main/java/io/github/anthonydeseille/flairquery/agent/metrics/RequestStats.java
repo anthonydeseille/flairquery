@@ -13,20 +13,31 @@ public final class RequestStats {
     private long sqlNanos;
     private int errors;
     private int droppedSql;
+    private long rows;
 
     public static final class Entry {
         int count;
         long nanos;
         long maxNanos;
         String caller;
+        long rows;
+        /** Collection role / entity whose lazy loading triggered this statement (last one seen), or null. */
+        String lazyRole;
 
         public int count() { return count; }
         public long nanos() { return nanos; }
         public long maxNanos() { return maxNanos; }
         public String caller() { return caller; }
+        public long rows() { return rows; }
+        public String lazyRole() { return lazyRole; }
     }
 
     public void record(String normalizedSql, String caller, long nanos, boolean failed) {
+        record(normalizedSql, caller, nanos, failed, null);
+    }
+
+    /** @return the statement entry, or null when the per-request distinct SQL bound is reached */
+    public Entry record(String normalizedSql, String caller, long nanos, boolean failed, String lazyRole) {
         queries++;
         sqlNanos += nanos;
         if (failed) {
@@ -36,7 +47,7 @@ public final class RequestStats {
         if (e == null) {
             if (bySql.size() >= MAX_DISTINCT_SQL) {
                 droppedSql++;
-                return;
+                return null;
             }
             e = new Entry();
             bySql.put(normalizedSql, e);
@@ -45,7 +56,21 @@ public final class RequestStats {
         e.nanos += nanos;
         e.maxNanos = Math.max(e.maxNanos, nanos);
         e.caller = caller;
+        if (lazyRole != null) {
+            e.lazyRole = lazyRole;
+        }
+        return e;
     }
+
+    /** One row read from a result set of {@code entry} (null: statement not tracked). */
+    public void rowRead(Entry entry) {
+        rows++;
+        if (entry != null) {
+            entry.rows++;
+        }
+    }
+
+    public long rows() { return rows; }
 
     // ---------------------------------------------------------------- JPA profile (phase 3)
 

@@ -25,7 +25,16 @@ public interface FqHooks {
 
     void requestExit(Object servletRequest, Object servletResponse, Throwable thrown);
 
-    // ---------------------------------------------------------------- ORM (phase 3)
+    // ---------------------------------------------------------------- JPA profile (phase 3)
+
+    /** {@link #queryEnd(Object, String, long, Throwable)} with the value returned by the execute method. */
+    default void queryEnd(Object statement, String sql, long start, Throwable thrown, Object result) {
+        queryEnd(statement, sql, start, thrown);
+    }
+
+    /** {@code ResultSet#next()} returned true on {@code resultSet}. */
+    default void rowRead(Object resultSet) { }
+
 
     /** Hibernate put an entity into the persistence context (loaded from a result set). */
     default void entityLoaded(Object entity) { }

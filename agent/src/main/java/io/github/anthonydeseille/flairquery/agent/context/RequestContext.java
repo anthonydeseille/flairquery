@@ -17,6 +17,13 @@ public final class RequestContext {
     public int transactionDepth;
     /** OpenEntityManagerInViewInterceptor ran for this request. */
     public boolean openInView;
+    /** Lazy loads in progress (collection role / entity name), innermost last. */
+    public final java.util.ArrayDeque<String> lazyLoading = new java.util.ArrayDeque<>(4);
+    /** Result sets of this request's measured executions -> their statement entry (rows read). */
+    public final java.util.IdentityHashMap<Object, RequestStats.Entry> resultSets = new java.util.IdentityHashMap<>();
+    /** Fast path: the result set read last (Hibernate reads one result set at a time). */
+    public Object lastResultSet;
+    public RequestStats.Entry lastResultSetEntry;
     private final long startNanos;
     private final RequestStats stats = new RequestStats();
     int depth;

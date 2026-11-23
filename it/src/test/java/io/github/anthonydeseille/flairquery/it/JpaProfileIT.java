@@ -55,6 +55,30 @@ class JpaProfileIT {
     }
 
     @Test
+    void theNPlusOneStatementsAreTracedBackToTheLazyCollection() throws Exception {
+        JsonNode p = profile("GET /authors");
+        JsonNode perAuthor = StreamSupport.stream(p.get("statements").spliterator(), false)
+                .filter(s -> s.get("sql").asText().contains("from book b1_0")).findFirst().orElseThrow();
+
+        assertThat(perAuthor.get("perRequest").asDouble()).isEqualTo(20.0);
+        assertThat(perAuthor.get("triggeredByLazyLoad").asText()).isEqualTo(DEMO + ".domain.Author.books");
+        assertThat(p.get("queriesPerRequest").asDouble()).isEqualTo(22.0);   // page + count + 20 x books
+        assertThat(p.get("rowsPerRequest").asDouble()).isPositive();
+        JsonNode page = StreamSupport.stream(p.get("statements").spliterator(), false)
+                .filter(s -> s.get("sql").asText().contains("from author a1_0 order by")).findFirst().orElseThrow();
+        assertThat(page.get("rowsPerExecution").asDouble()).isEqualTo(20.0);  // limit=20
+        assertThat(page.get("triggeredByLazyLoad").isNull()).isTrue();
+    }
+
+    @Test
+    void joinFetchReadsEveryRowOfTheCollectionForAPageOfFive() throws Exception {
+        JsonNode p = profile("GET /authors/with-books");
+        JsonNode fetch = StreamSupport.stream(p.get("statements").spliterator(), false)
+                .filter(s -> s.get("sql").asText().contains("join book b1_0")).findFirst().orElseThrow();
+        assertThat(fetch.get("rowsPerExecution").asDouble()).isGreaterThan(5.0);   // trap 5: whole result read
+    }
+
+    @Test
     void eagerPublishersAreLoadedWithBooks() throws Exception {
         JsonNode p = profile("GET /books");
         assertThat(find(p.get("entities"), "entity", DEMO + ".domain.Book").get("perRequest").asDouble())

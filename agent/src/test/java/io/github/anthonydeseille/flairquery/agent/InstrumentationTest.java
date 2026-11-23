@@ -170,6 +170,40 @@ class InstrumentationTest {
     }
 
     @Test
+    void rowsAreCountedOnceThroughHikariAndAttachedToTheirStatement() throws Exception {
+        DemoServlet servlet = new DemoServlet();
+        servlet.pattern = "/rows";
+        servlet.afterMapping = () -> {
+            try (var c = hikari.getConnection()) {
+                for (String sql : new String[]{"SELECT X FROM SYSTEM_RANGE(1, 7)", "SELECT X AS Y FROM SYSTEM_RANGE(1, 3)"}) {
+                    try (var ps = c.prepareStatement(sql); var rs = ps.executeQuery()) {
+                        while (rs.next()) {
+                            rs.getLong(1);
+                        }
+                    }
+                }
+                try (var st = c.createStatement(); var rs = st.executeQuery("SELECT X AS Z FROM SYSTEM_RANGE(1, 5)")) {
+                    rs.next();                                  // only 2 of the 5 rows are read
+                    rs.next();
+                }
+            }
+            return "done";
+        };
+
+        servlet.service(FakeHttp.request("GET", "/rows"), FakeHttp.response());
+
+        var profile = installation.runtime().profiles().profiles().stream()
+                .filter(p -> p.get("endpoint").equals("GET /rows")).findFirst().orElseThrow();
+        assertThat(profile).containsEntry("rowsPerRequest", 12.0).containsEntry("queriesPerRequest", 3.0);
+        @SuppressWarnings("unchecked")
+        var statements = (java.util.List<Map<String, Object>>) profile.get("statements");
+        assertThat(statements).extracting(m -> m.get("sql") + "=" + m.get("rowsPerExecution"))
+                .containsExactlyInAnyOrder("SELECT X FROM SYSTEM_RANGE(?...)=7.0",
+                        "SELECT X AS Y FROM SYSTEM_RANGE(?...)=3.0",
+                        "SELECT X AS Z FROM SYSTEM_RANGE(?...)=2.0");     // rows read, not rows returned
+    }
+
+    @Test
     void agentFaultNeverBreaksTheBusinessQuery() throws Exception {
         try {
             Fq.install(new io.github.anthonydeseille.flairquery.agent.core.FqRuntime(

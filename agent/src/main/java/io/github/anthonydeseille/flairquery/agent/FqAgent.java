@@ -5,6 +5,7 @@ import io.github.anthonydeseille.flairquery.agent.core.FqRuntime;
 import io.github.anthonydeseille.flairquery.agent.http.FqHttpServer;
 import io.github.anthonydeseille.flairquery.agent.jdbc.PrepareStatementAdvice;
 import io.github.anthonydeseille.flairquery.agent.jdbc.PreparedExecuteAdvice;
+import io.github.anthonydeseille.flairquery.agent.jdbc.ResultSetNextAdvice;
 import io.github.anthonydeseille.flairquery.agent.jdbc.SqlArgumentAdvice;
 import io.github.anthonydeseille.flairquery.agent.jdbc.StatementExecuteAdvice;
 import io.github.anthonydeseille.flairquery.agent.log.JsonLog;
@@ -39,6 +40,7 @@ import static net.bytebuddy.matcher.ElementMatchers.isSynthetic;
 import static net.bytebuddy.matcher.ElementMatchers.nameStartsWith;
 import static net.bytebuddy.matcher.ElementMatchers.named;
 import static net.bytebuddy.matcher.ElementMatchers.namedOneOf;
+import static net.bytebuddy.matcher.ElementMatchers.returns;
 import static net.bytebuddy.matcher.ElementMatchers.not;
 import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
@@ -212,6 +214,11 @@ public final class FqAgent {
             return builder;
         }
         return builder
+                // phase 3: rows read (only result sets registered by a measured execution are counted)
+                .type(not(isInterface()).and(hasSuperType(named("java.sql.ResultSet"))))
+                .transform(new AgentBuilder.Transformer.ForAdvice()
+                        .advice(named("next").and(takesArguments(0)).and(returns(boolean.class)).and(not(isAbstract())),
+                                ResultSetNextAdvice.class.getName()))
                 // phase 3: JPA profile
                 .type(named(HIBERNATE_HOOKS[0]))
                 .transform(new AgentBuilder.Transformer.ForAdvice()

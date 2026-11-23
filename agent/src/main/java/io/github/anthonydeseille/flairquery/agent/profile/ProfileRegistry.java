@@ -21,6 +21,7 @@ public final class ProfileRegistry implements FqListener {
 
     static final int MAX_ENDPOINTS = 500;
     static final int MAX_KEYS = 200;
+    static final int MAX_STATEMENTS_SHOWN = 20;
 
     private final Map<String, EndpointProfile> endpoints = new ConcurrentHashMap<>();
 
@@ -48,15 +49,38 @@ public final class ProfileRegistry implements FqListener {
     static final class EndpointProfile {
         final String name;
         long requests;
+        long queries;
+        long rows;
+        long sqlNanos;
+        long maxRowsPerRequest;
         long inMemoryPaginationRequests;
         long openInViewRequests;
         final Map<String, long[]> entities = new LinkedHashMap<>();   // total, max per request
         final Map<String, Lazy> lazy = new LinkedHashMap<>();
+        final Map<String, Statement> statements = new LinkedHashMap<>();
 
         EndpointProfile(String name) { this.name = name; }
 
         synchronized void record(RequestStats st) {
             requests++;
+            queries += st.queries();
+            rows += st.rows();
+            sqlNanos += st.sqlNanos();
+            maxRowsPerRequest = Math.max(maxRowsPerRequest, st.rows());
+            for (Map.Entry<String, RequestStats.Entry> e : st.bySql().entrySet()) {
+                Statement x = statements.get(e.getKey());
+                if (x == null) {
+                    if (statements.size() >= MAX_KEYS) continue;
+                    statements.put(e.getKey(), x = new Statement());
+                }
+                RequestStats.Entry v = e.getValue();
+                x.executions += v.count();
+                x.maxPerRequest = Math.max(x.maxPerRequest, v.count());
+                x.rows += v.rows();
+                x.nanos += v.nanos();
+                x.caller = v.caller();
+                if (v.lazyRole() != null) x.lazyRole = v.lazyRole();
+            }
             if (st.inMemoryPaginations() > 0) inMemoryPaginationRequests++;
             if (st.openInView()) openInViewRequests++;
             for (Map.Entry<String, int[]> e : st.entities().entrySet()) {
@@ -87,6 +111,10 @@ public final class ProfileRegistry implements FqListener {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("endpoint", name);
             m.put("profiledRequests", requests);
+            m.put("queriesPerRequest", per(queries));
+            m.put("rowsPerRequest", per(rows));
+            m.put("maxRowsPerRequest", maxRowsPerRequest);
+            m.put("sqlTimeMsPerRequest", requests == 0 ? null : Math.round(sqlNanos / 1_000.0 / requests) / 1_000.0);
             List<Map<String, Object>> ents = new ArrayList<>();
             entities.forEach((type, v) -> {
                 Map<String, Object> e = new LinkedHashMap<>();
@@ -113,6 +141,21 @@ public final class ProfileRegistry implements FqListener {
             });
             lazies.sort(Comparator.comparingLong(e -> -(long) e.get("loads")));
             m.put("lazyLoads", lazies);
+            List<Map<String, Object>> stmts = new ArrayList<>();
+            statements.forEach((sql, x) -> {
+                Map<String, Object> e = new LinkedHashMap<>();
+                e.put("sql", sql);
+                e.put("caller", x.caller);
+                e.put("executions", x.executions);
+                e.put("perRequest", per(x.executions));
+                e.put("maxPerRequest", x.maxPerRequest);
+                e.put("rowsPerExecution", x.executions == 0 ? null : Math.round(x.rows * 100.0 / x.executions) / 100.0);
+                e.put("timeMs", Math.round(x.nanos / 1_000.0) / 1_000.0);
+                e.put("triggeredByLazyLoad", x.lazyRole);
+                stmts.add(e);
+            });
+            stmts.sort(Comparator.comparingLong(e -> -(long) e.get("executions")));
+            m.put("statements", stmts.size() > MAX_STATEMENTS_SHOWN ? stmts.subList(0, MAX_STATEMENTS_SHOWN) : stmts);
             m.put("inMemoryPaginationRequests", inMemoryPaginationRequests);
             m.put("openInViewRequests", openInViewRequests);
             return m;
@@ -121,6 +164,15 @@ public final class ProfileRegistry implements FqListener {
         private Double per(long total) {
             return requests == 0 ? null : Math.round(total * 100.0 / requests) / 100.0;
         }
+    }
+
+    static final class Statement {
+        long executions;
+        long maxPerRequest;
+        long rows;
+        long nanos;
+        String caller;
+        String lazyRole;
     }
 
     static final class Lazy {

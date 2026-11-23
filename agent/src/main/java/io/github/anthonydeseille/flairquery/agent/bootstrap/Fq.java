@@ -94,7 +94,24 @@ public final class Fq {
         }
     }
 
-    // ---------------------------------------------------------------- ORM (phase 3)
+    // ---------------------------------------------------------------- JPA profile (phase 3)
+
+    public static void queryEnd(Object statement, String sql, long start, Throwable thrown, Object result) {
+        try {
+            hooks.queryEnd(statement, sql, start, thrown, result);
+        } catch (Throwable t) {
+            onError("queryEnd", t);
+        }
+    }
+
+    public static void rowRead(Object resultSet) {
+        try {
+            hooks.rowRead(resultSet);
+        } catch (Throwable t) {
+            onError("rowRead", t);
+        }
+    }
+
 
     public static void entityLoaded(Object entity) {
         if (entity == null) {

@@ -16,7 +16,9 @@ public final class PreparedExecuteAdvice {
     @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)
     public static void exit(@Advice.This Object statement,
                             @Advice.Enter long start,
-                            @Advice.Thrown Throwable thrown) {
-        Fq.queryEnd(statement, null, start, thrown);
+                            @Advice.Thrown Throwable thrown,
+                            @Advice.Return(typing = net.bytebuddy.implementation.bytecode.assign.Assigner.Typing.DYNAMIC)
+                            Object result) {
+        Fq.queryEnd(statement, null, start, thrown, result);
     }
 }

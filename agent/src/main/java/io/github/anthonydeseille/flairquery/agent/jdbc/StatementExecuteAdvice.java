@@ -18,7 +18,9 @@ public final class StatementExecuteAdvice {
     public static void exit(@Advice.This Object statement,
                             @Advice.Argument(0) String sql,
                             @Advice.Enter long start,
-                            @Advice.Thrown Throwable thrown) {
-        Fq.queryEnd(statement, sql, start, thrown);
+                            @Advice.Thrown Throwable thrown,
+                            @Advice.Return(typing = net.bytebuddy.implementation.bytecode.assign.Assigner.Typing.DYNAMIC)
+                            Object result) {
+        Fq.queryEnd(statement, sql, start, thrown, result);
     }
 }

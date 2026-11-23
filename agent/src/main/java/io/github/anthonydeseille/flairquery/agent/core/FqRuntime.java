@@ -96,6 +96,11 @@ public final class FqRuntime implements FqHooks {
 
     @Override
     public void queryEnd(Object statement, String sql, long start, Throwable thrown) {
+        queryEnd(statement, sql, start, thrown, null);
+    }
+
+    @Override
+    public void queryEnd(Object statement, String sql, long start, Throwable thrown, Object result) {
         int[] depth = QUERY_DEPTH.get();
         if (depth[0] > 0) {
             depth[0]--;
@@ -116,7 +121,16 @@ public final class FqRuntime implements FqHooks {
                 ? new SqlNormalizer.Parsed(UNKNOWN_SQL, SqlTag.UNKNOWN)
                 : normalizer.parse(text);
         if (ctx != null) {
-            ctx.stats().record(parsed.normalizedSql(), parsed.caller(), nanos, thrown != null);
+            String lazyRole = ctx.profiled() ? ctx.lazyLoading.peekLast() : null;
+            RequestStats.Entry entry = ctx.stats().record(parsed.normalizedSql(), parsed.caller(), nanos,
+                    thrown != null, lazyRole);
+            if (ctx.profiled() && result instanceof java.sql.ResultSet) {
+                if (ctx.resultSets.size() < MAX_RESULT_SETS) {
+                    ctx.resultSets.put(result, entry);
+                }
+                ctx.lastResultSet = result;
+                ctx.lastResultSetEntry = entry;
+            }
         } else {
             for (FqListener l : listeners) {
                 l.onBackgroundQuery(config.appName(), parsed.normalizedSql(), parsed.caller(), nanos, thrown != null);
@@ -201,9 +215,36 @@ public final class FqRuntime implements FqHooks {
         return cut > 0 ? name.substring(0, cut) : name;
     }
 
+    /** Result sets remembered per request (bounded: a request reading more is not profiled further). */
+    static final int MAX_RESULT_SETS = 10_000;
+
+    @Override
+    public void rowRead(Object resultSet) {
+        RequestContext ctx = profiled();
+        if (ctx == null) {
+            return;
+        }
+        if (resultSet == ctx.lastResultSet) {
+            ctx.stats().rowRead(ctx.lastResultSetEntry);
+            return;
+        }
+        if (!ctx.resultSets.containsKey(resultSet)) {
+            return;     // driver result set behind a pool proxy, or not produced by a measured execution
+        }
+        RequestStats.Entry entry = ctx.resultSets.get(resultSet);
+        ctx.lastResultSet = resultSet;
+        ctx.lastResultSetEntry = entry;
+        ctx.stats().rowRead(entry);
+    }
+
     @Override
     public long lazyLoadStart(String kind, String role) {
-        return profiled() != null ? System.nanoTime() : -1L;
+        RequestContext ctx = profiled();
+        if (ctx == null) {
+            return -1L;
+        }
+        ctx.lazyLoading.addLast(role == null ? SqlTag.UNKNOWN : role);
+        return System.nanoTime();
     }
 
     @Override
@@ -212,6 +253,7 @@ public final class FqRuntime implements FqHooks {
         if (ctx == null) {
             return;
         }
+        ctx.lazyLoading.pollLast();
         String caller = callerResolver.resolve();
         ctx.stats().lazyLoaded(kind, role == null ? SqlTag.UNKNOWN : role, System.nanoTime() - start,
                 ctx.transactionDepth == 0, caller);
