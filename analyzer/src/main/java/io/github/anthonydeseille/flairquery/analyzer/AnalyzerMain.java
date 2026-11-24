@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.anthonydeseille.flairquery.analyzer.bundle.BundleBuilder;
 import io.github.anthonydeseille.flairquery.analyzer.code.SourceLocator;
 import io.github.anthonydeseille.flairquery.analyzer.fix.FixCommand;
+import io.github.anthonydeseille.flairquery.analyzer.forge.PublishCommand;
 import io.github.anthonydeseille.flairquery.analyzer.input.JsonSource;
 import io.github.anthonydeseille.flairquery.analyzer.mr.MrCommand;
 import io.github.anthonydeseille.flairquery.analyzer.prove.ProveCommand;
@@ -24,12 +25,13 @@ import java.util.Map;
  *   bundle --agent URL --collector URL --source DIR --out DIR [--window 1h]
  *   prove  --finding ID --patch FILE[,FILE...] [options, see {@link ProveCommand}]
  *   fix    --bundles DIR [--finding ID[,ID...]] [--prove true] [options, see {@link FixCommand}]
- *   mr     --fixes DIR [--bundles DIR] [options, see {@link MrCommand}]
+ *   mr      --fixes DIR [--bundles DIR] [options, see {@link MrCommand}]
+ *   publish --mr DIR --github OWNER/REPO [options, see {@link PublishCommand}]
  * </pre>
  * {@code bundle} writes one evidence bundle per finding ({@code <id>.json}) and an {@code index.json};
  * {@code prove} proves patches for one finding (accepted / rejected, one report per patch);
  * {@code fix} generates fixes from bundles and proves them;
- * {@code mr} turns the proven fixes into merge requests.
+ * {@code mr} turns the proven fixes into merge requests (dry run); {@code publish} opens them on GitHub.
  */
 public final class AnalyzerMain {
 
@@ -52,11 +54,15 @@ public final class AnalyzerMain {
         if (args.length > 0 && args[0].equals("mr")) {
             return MrCommand.run(options(args));
         }
+        if (args.length > 0 && args[0].equals("publish")) {
+            return PublishCommand.run(options(args));
+        }
         if (args.length == 0 || !args[0].equals("bundle")) {
             System.err.println("usage: bundle --agent URL --collector URL --source DIR --out DIR [--window 1h]");
             System.err.println("       " + ProveCommand.USAGE.substring("usage: ".length()));
             System.err.println("       " + FixCommand.USAGE.substring("usage: ".length()));
             System.err.println("       " + MrCommand.USAGE.substring("usage: ".length()));
+            System.err.println("       " + PublishCommand.USAGE.substring("usage: ".length()));
             return 2;
         }
         Map<String, String> opt = options(args);

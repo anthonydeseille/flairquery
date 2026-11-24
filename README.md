@@ -677,6 +677,29 @@ of an `Index Cond`; trap 1 "GET /authors with 4 authors ran 5 SQL statements: ex
 `analyzer/src/test/resources/regression-tests` and `RegressionTestIT` (`make verify`, no API call, ~2 min) proves them
 red / green again; `make llm-it` (`LlmTestIT`) asks Claude for new ones.
 
+### Publishing on GitHub
+
+`publish` opens the merge requests `mr` wrote, once they have been read: one branch `flairquery/<fix>` and one pull
+request per selected fix, labelled `flairquery`, never merged.
+
+```bash
+export GITHUB_TOKEN=...   # fine-grained token on the target repository: Pull requests + Contents, read and write
+make mr-publish GITHUB_REPO=owner/name [BASE=main] [TARGET_DIR=.] [DRAFT=true]
+```
+
+- The branch is made with git in a fresh clone: the base branch as it is on GitHub, the patch applied (the source
+  application directory, `demo-app/`, replaced by `TARGET_DIR`), one commit by `FlairQuery <flairquery@invalid>`
+  (`--author`). The token reaches git through its environment (an HTTP header), never the URL or the command line.
+- The pull request is opened through the REST API (`--api` for GitHub Enterprise); its description is the one of
+  the dry run.
+- Running it again is safe: an open pull request gets a push only if its code changed and an update only if its
+  title or description changed (else nothing at all); a closed one (a reviewer said no) or a merged one is left
+  alone, never reopened; a patch that no longer applies on the base is skipped with the reason, to be proven
+  again on the new code. Results in `target/mr/published.json`.
+
+Unit-tested against a fake GitHub API and a local bare repository (`PublisherTest`); GitLab comes later behind
+the same `Forge` interface.
+
 ## Collector (phase 2)
 
 `flairquery-collector` periodically reads the observed PostgreSQL with the read-only `fq_reader` role

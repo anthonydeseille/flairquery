@@ -89,6 +89,13 @@ mr-local: ## Merge requests of the proven fixes in target/fixes, each with a reg
 	java -jar analyzer/target/flairquery-analyzer.jar mr --fixes target/fixes --bundles target/analysis \
 	  --llm $(or $(LLM),claude) --test-retries $(or $(RETRIES),2) $(if $(MODEL),--model $(MODEL)) $(if $(EFFORT),--effort $(EFFORT))
 
+.PHONY: mr-publish
+mr-publish: ## Open the merge requests of target/mr as GitHub pull requests (GITHUB_REPO=owner/name [BASE=main] [TARGET_DIR=.] [DRAFT=true]); needs GITHUB_TOKEN
+	@test -n "$(GITHUB_REPO)" || { echo "GITHUB_REPO=owner/name is required"; exit 2; }
+	./mvnw -B -q -pl core,analyzer -am package -DskipTests
+	java -jar analyzer/target/flairquery-analyzer.jar publish --mr target/mr --github $(GITHUB_REPO) \
+	  --base $(or $(BASE),main) --target-dir $(or $(TARGET_DIR),.) --draft $(or $(DRAFT),false)
+
 .PHONY: openlibrary
 openlibrary: ## Stream Open Library dumps and cache a small subset (~/.cache/flairquery/openlibrary)
 	python3 -I corpus/openlibrary/fetch.py $(OL_ARGS)
