@@ -106,15 +106,16 @@ collector-local: jars ## Collector on the host against the local Compose databas
 	  java -jar collector/target/flairquery-collector.jar
 
 .PHONY: demo-local seed-local traffic-local demo-local-clean
-demo-local: jars ## Postgres 16 in Docker + demo app with the agent (foreground, Ctrl-C to stop)
+DEMO_PORT ?= 8080
+demo-local: jars ## Postgres 16 in Docker + demo app with the agent (foreground, Ctrl-C to stop) [DEMO_PORT=8080]
 	docker compose -f $(LOCAL_COMPOSE) up -d --wait
-	$(FQ_LOCAL_ENV) java -javaagent:$(AGENT_JAR) -jar $(DEMO_JAR)
+	SERVER_PORT=$(DEMO_PORT) $(FQ_LOCAL_ENV) java -javaagent:$(AGENT_JAR) -jar $(DEMO_JAR)
 
 seed-local: ## Load corpus PROFILE=S|M into the local Postgres (demo app must have started once)
 	$(LOCAL_PG) corpus/load.sh $(PROFILE) $(if $(FORCE),--force,)
 
-traffic-local: ## Call every demo endpoint (ROUNDS=5)
-	scripts/traffic.sh http://localhost:8080 $(or $(ROUNDS),5)
+traffic-local: ## Call every demo endpoint (ROUNDS=5) [DEMO_PORT=8080]
+	scripts/traffic.sh http://localhost:$(DEMO_PORT) $(or $(ROUNDS),5)
 
 demo-local-clean: ## Stop local Postgres and DELETE its volume
 	docker compose -f $(LOCAL_COMPOSE) down -v
