@@ -21,6 +21,8 @@ class ShadedJarIT {
                     .filter(n -> !n.startsWith("io/github/anthonydeseille/flairquery/"))
                     .filter(n -> !n.equals("META-INF/MANIFEST.MF"))
                     .filter(n -> !n.startsWith("META-INF/licenses/"))
+                    // Byte Buddy's LICENSE and NOTICE, kept as Apache 2.0 requires (not classes: nothing can clash)
+                    .filter(n -> !n.equals("META-INF/LICENSE") && !n.equals("META-INF/NOTICE"))
                     .toList();
             assertThat(foreign).as("entries outside io/github/anthonydeseille/flairquery/").isEmpty();
 
