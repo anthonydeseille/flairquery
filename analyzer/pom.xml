@@ -20,6 +20,8 @@
   <properties>
     <fq.demo.sources>${project.basedir}/../demo-app</fq.demo.sources>
     <fq.agent.jar>${project.basedir}/../agent/target/flairquery-agent.jar</fq.agent.jar>
+    <!-- LlmFixIT makes real (billed) Claude API calls: opt-in, see make llm-it -->
+    <fq.llm.it>false</fq.llm.it>
   </properties>
 
   <dependencies>
@@ -49,6 +51,11 @@
     <dependency>
       <groupId>org.postgresql</groupId>
       <artifactId>postgresql</artifactId>
+    </dependency>
+    <!-- LLM fix generator (phase 4 step 4): Claude through the official SDK -->
+    <dependency>
+      <groupId>com.anthropic</groupId>
+      <artifactId>anthropic-java</artifactId>
     </dependency>
     <dependency>
       <groupId>org.slf4j</groupId>
@@ -92,6 +99,7 @@
           <systemPropertyVariables>
             <fq.repo>${project.basedir}/..</fq.repo>
             <fq.agent.jar>${fq.agent.jar}</fq.agent.jar>
+            <fq.llm.it>${fq.llm.it}</fq.llm.it>
             <org.slf4j.simpleLogger.defaultLogLevel>warn</org.slf4j.simpleLogger.defaultLogLevel>
           </systemPropertyVariables>
         </configuration>

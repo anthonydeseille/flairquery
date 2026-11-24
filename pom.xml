@@ -34,6 +34,7 @@
     <testcontainers.version>1.21.4</testcontainers.version>
     <jackson.version>2.23.0</jackson.version>
     <liquibase.version>4.31.1</liquibase.version>
+    <anthropic.version>3.13.0</anthropic.version>
   </properties>
 
   <dependencyManagement>
@@ -89,6 +90,11 @@
         <groupId>org.liquibase</groupId>
         <artifactId>liquibase-core</artifactId>
         <version>${liquibase.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.anthropic</groupId>
+        <artifactId>anthropic-java</artifactId>
+        <version>${anthropic.version}</version>
       </dependency>
       <dependency>
         <groupId>org.testcontainers</groupId>

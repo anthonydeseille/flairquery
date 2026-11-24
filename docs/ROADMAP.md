@@ -45,9 +45,11 @@ statements), the plans and the column selectivity from phase 2.
 
 ## Phase 4 — LLM analyzer
 Status: step 1 (evidence bundles), step 2 (the prover: identical JSON, finding gone, no new finding,
-fewer statements and less SQL time, on a Testcontainers copy) and step 3 (deterministic fixes for traps 2
+fewer statements and less SQL time, on a Testcontainers copy), step 3 (deterministic fixes for traps 2
 and 4, generated from the bundles and proven: `fetch = LAZY`, Liquibase `CREATE INDEX CONCURRENTLY`
-changeset checked on its plan) done; next, LLM-generated fixes (traps 1, 3, 5, 6).
+changeset checked on its plan) and step 4 (LLM-generated fixes for traps 1, 3, 5, 6: Claude behind an
+`LlmClient` interface, templates first, rejected fixes retried with the prover's reasons; all four proven on the
+demo) done; next, the "fixed and proven" scorecard per trap and the phase 4 documentation.
 - Inputs: source code (entity, repository, service), plan, schema, endpoint profile
 - Proposals: LAZY + `@EntityGraph` / `JOIN FETCH` per use case, DTO projections,
   `@BatchSize` / `default_batch_fetch_size`, `@Query` rewrites, indexes (Liquibase changeset,

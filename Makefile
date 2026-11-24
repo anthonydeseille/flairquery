@@ -32,8 +32,14 @@ test: ## Unit tests (Java + corpus)
 	./mvnw -B test
 	python3 -m unittest discover -s corpus -p 'test_*.py'
 
-verify: ## Unit + integration tests (Testcontainers, needs Docker)
+verify: ## Unit + integration tests (Testcontainers, needs Docker); LlmFixIT is skipped (make llm-it)
 	./mvnw -B verify
+
+.PHONY: llm-it
+llm-it: ## LLM fixes of traps 1, 3, 5, 6 proven end to end (real Claude API calls, billed; needs ANTHROPIC_API_KEY + Docker)
+	@test -n "$$ANTHROPIC_API_KEY" || { echo "ANTHROPIC_API_KEY is not set"; exit 2; }
+	./mvnw -B -q -pl core,agent -am install -DskipTests
+	./mvnw -B -pl analyzer verify -Dtest=none -Dsurefire.failIfNoSpecifiedTests=false -Dit.test=LlmFixIT -Dfq.llm.it=true
 
 # ---------------------------------------------------------------- local playground (no Kubernetes)
 .PHONY: db-grants-local
@@ -71,10 +77,11 @@ prove-local: ## Prove patches for one finding (FINDING=<id> PATCH=a.patch[,b.pat
 	java -jar analyzer/target/flairquery-analyzer.jar prove --finding $(FINDING) --patch $(PATCH) --rounds $(or $(ROUNDS),5)
 
 .PHONY: fix-local
-fix-local: ## Generate the deterministic fixes from target/analysis and prove them ([FINDING=id,id] [ROUNDS=5]); needs Docker -> target/fixes
+fix-local: ## Generate fixes from target/analysis (templates, then Claude) and prove them ([FINDING=id,id] [ROUNDS=5] [LLM=off] [RETRIES=2]); needs Docker + ANTHROPIC_API_KEY -> target/fixes
 	./mvnw -B -q -pl core,agent,analyzer -am package -DskipTests
 	java -jar analyzer/target/flairquery-analyzer.jar fix --bundles target/analysis --rounds $(or $(ROUNDS),5) \
-	  $(if $(FINDING),--finding $(FINDING))
+	  --llm $(or $(LLM),claude) --llm-retries $(or $(RETRIES),2) $(if $(MODEL),--model $(MODEL)) \
+	  $(if $(EFFORT),--effort $(EFFORT)) $(if $(FINDING),--finding $(FINDING))
 
 .PHONY: openlibrary
 openlibrary: ## Stream Open Library dumps and cache a small subset (~/.cache/flairquery/openlibrary)

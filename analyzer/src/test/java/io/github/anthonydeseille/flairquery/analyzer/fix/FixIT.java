@@ -3,6 +3,7 @@ package io.github.anthonydeseille.flairquery.analyzer.fix;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.github.anthonydeseille.flairquery.analyzer.bundle.BundleBuilder;
 import io.github.anthonydeseille.flairquery.analyzer.prove.ProveCommand;
+import io.github.anthonydeseille.flairquery.analyzer.prove.Prover;
 import io.github.anthonydeseille.flairquery.analyzer.prove.Verdict;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -34,12 +35,15 @@ class FixIT {
         GeneratorsTest.bundles();
         List<JsonNode> bundles = new ArrayList<>(GeneratorsTest.bundles);
         proposals = FixCommand.generate(bundles, REPO.resolve("demo-app"), "demo-app", FixCommand.generators(), System.out::println);
-        List<Path> patches = FixCommand.writePatches(proposals, OUT);
-        verdicts = FixCommand.prove(ProveCommand.config(Map.of(
+        Prover.Config config = ProveCommand.config(Map.of(
                 "repo", REPO.toString(),
                 "agent-jar", System.getProperty("fq.agent.jar", REPO.resolve("agent/target/flairquery-agent.jar").toString()),
-                "work", REPO.resolve("analyzer/target/prover-fix-it").toString())), proposals, patches);
-        FixCommand.writeIndex(proposals, patches, verdicts, OUT);
+                "work", REPO.resolve("analyzer/target/prover-fix-it").toString()));
+        // templates only: no LLM, no retry
+        List<FixCommand.Outcome> outcomes = FixCommand.proveAndRetry(proposals, REPO.resolve("demo-app"), "demo-app",
+                null, 0, (p, patches) -> FixCommand.prove(config, p, patches), OUT, System.out::println);
+        FixCommand.writeIndex(outcomes, OUT);
+        verdicts = outcomes.stream().map(FixCommand.Outcome::verdict).toList();
     }
 
     static Verdict verdict(String name) {

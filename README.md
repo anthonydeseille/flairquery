@@ -85,7 +85,7 @@ operator: see [docs/ROADMAP.md](docs/ROADMAP.md).
 flairquery/
 ├── core/           flairquery-core: shared fq: tag format/parser and SQL normalizer (no dependency)
 ├── collector/      flairquery-collector: phase 2 PostgreSQL collector
-├── analyzer/       flairquery-analyzer: phase 4 fix proposals, proven before being proposed (in progress)
+├── analyzer/       flairquery-analyzer: phase 4 fix proposals (templates + LLM), proven before being proposed
 ├── agent/          flairquery-agent: Java 21 agent (relocated ByteBuddy, dependency-free shaded jar)
 ├── demo-app/       flairquery-demo-app: target Spring Boot app, traps documented in TRAPS.md
 ├── it/             flairquery-it: integration tests (Testcontainers + real agent)
@@ -550,7 +550,50 @@ Validated on the demo (`FixIT`, bundles from recorded agent + collector response
 | `lazy-book-publisher` (4 findings) | ACCEPTED | `/books` 45 -> 1 statement, `/books/titles` 501 -> 1, `/authors/with-books` 326 -> 2; JSON identical. Not accepted *for* the `GET /authors` finding alone (publishers were joined there: 22 -> 22 statements), but resolved there too |
 | `index-review-reviewer-name` | ACCEPTED | plan `Index Scan using review_pkey` + `Filter reviewer_name` -> `Bitmap Index Scan using idx_review_reviewer_name`; `/reviews/search` ~14.7 -> ~2.6 ms SQL per request, same statement |
 
-Next step: LLM-generated fixes (traps 1, 3, 5, 6), never proposed without that proof.
+### LLM fixes (traps 1, 3, 5, 6)
+
+The findings no template handles (N+1, over-fetching, `JOIN FETCH` + pagination, open-in-view), the ones a
+template skips (a Flyway project) and every fix the prover rejects go to an LLM: Claude (`claude-opus-5-5`,
+adaptive thinking, effort `high`) through the official Java SDK, behind an `LlmClient` interface (a local model
+can be plugged in later). It never decides anything: its fix is one more candidate for the same prover.
+
+- Input: the evidence bundle (finding, evidence, the endpoint's statements and callers), the source files it
+  names, the list of the application's files (`src/` and build files only: documentation such as the demo's
+  `TRAPS.md`, which spells out the expected fixes, is neither listed nor readable), the requests the proof
+  replays, and the rules of the proof.
+- Tools: `read_file` (any listed file), `propose_fix` (the whole new content of every changed or added file,
+  paths checked to stay inside the application's sources), `no_fix` (with the reason).
+- Retry: a REJECTED fix is sent back with its patch and the prover's reasons (`response changed: ... JSON
+  differs at ...`, `new finding: ...`, `no measurable gain: ...`); the new fix is proven against a fresh
+  baseline, up to `--llm-retries` (2) times. In `index.json` a retry has `attempt` and `replaces`.
+- Templates first: the deterministic fixes of traps 2 and 4 cost nothing and stay identical from run to run.
+- Data sent: the evidence (SQL with `?` placeholders, no values) and the application's source files. `--llm off`
+  (or `make fix-local LLM=off`) keeps everything local, templates only.
+
+```bash
+export ANTHROPIC_API_KEY=...
+make fix-local                     # templates + Claude, proven -> target/fixes ([RETRIES=2] [MODEL=...] [EFFORT=high])
+make fix-local LLM=off             # templates only, no API call
+make llm-it                        # LlmFixIT: traps 1, 3, 5, 6 end to end (real API calls, billed; not in make verify)
+```
+
+Validated on the demo (`LlmFixIT`, bundles from recorded agent + collector responses, profile S, 5 rounds):
+all four traps fixed by Claude and proven at the **first attempt**, about 3 minutes and ~115k tokens (most of
+the input read from the prompt cache).
+
+| Trap | Fix written by the model | Proof (target endpoint, per request) | Also resolved |
+|---|---|---|---|
+| 1 N+1 `Author.books` | `GET /authors` built in a `@Transactional(readOnly = true)` service from two projections: the page of authors (id, name, no count query), then the titles of those authors in one `in (:ids)` query ordered by author, id | 22 -> 2 statements, ~58 -> ~9 ms SQL | open-in-view, over-fetching `Author` and `Book`, useless EAGER on `/authors` |
+| 3 over-fetching `/books/titles` | JPQL constructor projection `select new BookTitleDto(b.id, b.title) ... order by b.id` | 501 -> 1 statement, ~398 -> ~6 ms SQL | useless EAGER on `/books/titles` |
+| 5 `JOIN FETCH` + pagination | ids and names paged in SQL (`exists` a book, `order by a.id`, `LIMIT`), then the titles of that page in one query | 326 -> 2 statements, ~262 -> ~3 ms SQL | over-fetching `Author` and `Book`, useless EAGER on `/with-books` |
+| 6 open-in-view | `spring.jpa.open-in-view: false` + the same service-side projections as trap 1 | 22 -> 2 statements, ~57 -> ~8 ms SQL | N+1, over-fetching, useless EAGER on `/authors` |
+
+JSON strictly identical on every replayed request, no new finding, no other endpoint running more statements.
+Limits: the demo's source comments name its traps (`TRAP 5: ... HHH90003004`), a hint a real application
+does not give; the output of a model varies from run to run, which is why only the proof decides. The retry
+path (rejection reasons sent back) is covered by unit tests with a scripted model; it was not needed here.
+
+Next step: the scorecard "fixed and proven" per trap, and the documentation of phase 4.
 
 ## Collector (phase 2)
 

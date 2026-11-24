@@ -29,7 +29,7 @@ public final class SourceLocator {
             "interface\\s+(\\w+)\\s+extends\\s+[\\w.]*(?:Jpa|Crud|PagingAndSorting|ListCrud|ListPagingAndSorting)?Repository\\s*<\\s*([\\w.]+)\\s*,");
     private static final Pattern TABLE = Pattern.compile("@Table\\s*\\(\\s*(?:name\\s*=\\s*)?\"([^\"]+)\"");
     private static final Pattern TYPE_REFERENCE = Pattern.compile("\\b([A-Z]\\w*Repository)\\b");
-    static final Set<String> SKIPPED_DIRS = Set.of("target", "build", ".git", ".gradle", ".idea", "node_modules", "out");
+    public static final Set<String> SKIPPED_DIRS = Set.of("target", "build", ".git", ".gradle", ".idea", "node_modules", "out");
 
     private final Path root;
     private final Map<String, Path> byClass = new LinkedHashMap<>();
