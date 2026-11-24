@@ -149,7 +149,7 @@ public final class FixCommand {
     }
 
     /** The requests as the model reads them: path, and whether only the status is compared. */
-    static List<String> describe(List<RequestSpec> requests) {
+    public static List<String> describe(List<RequestSpec> requests) {
         return requests.stream().map(r -> "GET " + r.path() + (r.compareBody() ? "" : "  (status only)")).toList();
     }
 

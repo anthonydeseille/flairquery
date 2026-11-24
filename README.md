@@ -649,6 +649,34 @@ On the demo (fixes of `FixIT`): 3 merge requests (`lazy-book-publisher`, `index-
 LLM fix); trap 6's fix is redundant with trap 1's (same findings resolved); the LLM fixes of traps 3 and 5 are
 deferred: they change the same lines of `BookRepository` / `AuthorRepository` as trap 1's.
 
+### Regression tests (proven red / green)
+
+Every merge request adds a regression test to the application, so that the problem cannot come back unnoticed.
+Claude writes it (`mr --llm claude`, the default) from the fix, its proof and the application's files (its existing
+tests first); it is kept only if Maven (`mvnw test -Dtest=<class>`, the application's own test setup) shows it
+**fails on an assertion on the current code** (a compilation error, an exception or a skip is a false red) and
+**passes with the fix**. Otherwise it is generated again with the reasons (`--test-retries`, 2), and a merge request
+whose test cannot be proven says why. The test:
+
+- calls the application over HTTP and creates its own small data set with SQL: it compiles with and without the fix;
+- for a JPA problem, asserts the SQL statements of one request (Hibernate statistics), at most what the fixed code
+  runs, fewer than the current code; for a missing index, asserts the plan matches the column through an index
+  (`enable_seqscan = off`);
+- does not snapshot the JSON: the prover already proved it identical on the real data.
+
+The patch of the merge request is the fix plus the test; its description shows the red message and the green run.
+
+```bash
+make mr-local            # fixes + regression tests (Claude, Docker) -> target/mr
+make mr-local LLM=off    # merge requests without tests, no API call
+```
+
+On the demo, the three tests were proven at the first attempt (~10k output tokens): trap 2 `GET /authors/with-books`
+"should run at most 2 SQL statements, but ran 6"; trap 4 plan `Seq Scan on review ... Filter: reviewer_name` instead
+of an `Index Cond`; trap 1 "GET /authors with 4 authors ran 5 SQL statements: expected at most 2". They are frozen in
+`analyzer/src/test/resources/regression-tests` and `RegressionTestIT` (`make verify`, no API call, ~2 min) proves them
+red / green again; `make llm-it` (`LlmTestIT`) asks Claude for new ones.
+
 ## Collector (phase 2)
 
 `flairquery-collector` periodically reads the observed PostgreSQL with the read-only `fq_reader` role

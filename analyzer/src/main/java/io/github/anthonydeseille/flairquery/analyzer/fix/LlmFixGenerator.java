@@ -236,7 +236,7 @@ public final class LlmFixGenerator implements FixGenerator {
         return String.join(", ", r);
     }
 
-    private static String fenced(String path, String content) {
+    public static String fenced(String path, String content) {
         String lang = path.endsWith(".java") ? "java" : path.endsWith(".yml") || path.endsWith(".yaml") ? "yaml"
                 : path.endsWith(".xml") ? "xml" : path.endsWith(".sql") ? "sql" : "";
         String fence = content.contains("```") ? "~~~~" : "```";
@@ -248,7 +248,7 @@ public final class LlmFixGenerator implements FixGenerator {
      * skipped. Nothing else is shown or readable: documentation may describe the expected fixes (the demo's
      * {@code TRAPS.md} does), and the measure is what the model finds from the evidence and the code.
      */
-    static List<String> files(Path root) throws IOException {
+    public static List<String> files(Path root) throws IOException {
         try (Stream<Path> walk = Files.walk(root)) {
             return walk.filter(Files::isRegularFile)
                     .filter(f -> !skipped(root, f))
@@ -264,11 +264,11 @@ public final class LlmFixGenerator implements FixGenerator {
             "settings.gradle.kts", "gradle.properties");
 
     /** A relative path the model may see and read. */
-    static boolean visible(String relative) {
+    public static boolean visible(String relative) {
         return relative.startsWith("src/") || BUILD_FILES.contains(relative);
     }
 
-    private static boolean skipped(Path root, Path f) {
+    public static boolean skipped(Path root, Path f) {
         for (Path part : root.relativize(f)) {
             if (SourceLocator.SKIPPED_DIRS.contains(part.toString())) return true;
         }
@@ -329,7 +329,7 @@ public final class LlmFixGenerator implements FixGenerator {
     }
 
     /** {@code path} inside {@code root}, or null (absolute, {@code ..}, outside). */
-    static Path resolve(Path root, String path) {
+    public static Path resolve(Path root, String path) {
         if (path == null || path.isBlank() || path.startsWith("/") || path.contains("\0")) return null;
         try {
             Path p = root.resolve(path).normalize();

@@ -41,7 +41,14 @@ public final class Description {
      */
     public static MergeRequest of(FixEntry fix, JsonNode report, Map<String, JsonNode> bundles, List<Selection.Choice> choices)
             throws IOException {
-        return new MergeRequest(fix.name(), BRANCH_PREFIX + fix.name(), title(report), body(fix, report, bundles, choices));
+        return of(fix, report, bundles, choices, null);
+    }
+
+    /** @param test its regression test (null: tests not generated, e.g. {@code --tests off}) */
+    public static MergeRequest of(FixEntry fix, JsonNode report, Map<String, JsonNode> bundles, List<Selection.Choice> choices,
+                                  RegressionTests.Outcome test) throws IOException {
+        return new MergeRequest(fix.name(), BRANCH_PREFIX + fix.name(), title(report),
+                body(fix, report, bundles, choices, test));
     }
 
     static String title(JsonNode report) {
@@ -59,8 +66,8 @@ public final class Description {
         return KINDS.getOrDefault(kind, kind.toLowerCase(Locale.ROOT).replace('_', ' '));
     }
 
-    static String body(FixEntry fix, JsonNode report, Map<String, JsonNode> bundles, List<Selection.Choice> choices)
-            throws IOException {
+    static String body(FixEntry fix, JsonNode report, Map<String, JsonNode> bundles, List<Selection.Choice> choices,
+                       RegressionTests.Outcome test) throws IOException {
         StringBuilder md = new StringBuilder();
         md.append("> Opened by FlairQuery from a fix its prover accepted. It is never merged automatically: "
                 + "a human review is required.\n\n");
@@ -75,8 +82,9 @@ public final class Description {
                     .append(cell(r.path("title").asText())).append(" |\n");
         }
 
-        Set<String> files = fix.files();
+        Set<String> files = new java.util.LinkedHashSet<>(fix.files());
         md.append("\n## Change\n\n").append(fix.description()).append("\n\n");
+        if (test != null && test.test() != null) files.add(appPrefix(files) + test.test().path());
         md.append(fix.llm()
                 ? "- Written by an LLM" + (fix.attempt() > 1 ? " (attempt " + fix.attempt() + ", after the prover rejected the previous ones)" : "")
                         + ", then proven like any other fix: review it as a colleague's change.\n"
@@ -112,6 +120,22 @@ public final class Description {
                     .append(p.path("before").asText()).append("\nafter:  ").append(p.path("after").asText()).append("\n```\n");
         }
 
+        md.append("\n## Regression test\n\n");
+        if (test == null) {
+            md.append("None: tests were not generated for this run.\n");
+        } else if (test.test() == null) {
+            md.append("None: ").append(test.missing()).append(".\n");
+        } else {
+            RegressionTest t = test.test();
+            md.append("`").append(t.path()).append("` (added by this change): ").append(t.description()).append("\n\n")
+                    .append("Proven before this merge request was opened, with `mvnw test -Dtest=").append(t.simpleName())
+                    .append("`:\n\n| Code | Result |\n|---|---|\n")
+                    .append("| current (without the fix) | ❌ fails: ").append(cell(test.red() == null ? "" : test.red())).append(" |\n")
+                    .append("| with the fix | ✅ passes |\n");
+            md.append("\nWritten by an LLM").append(test.attempts() > 1 ? " (attempt " + test.attempts() + ")" : "")
+                    .append(", kept only because it was red then green: its data set and thresholds are worth a look.\n");
+        }
+
         md.append("\n## Review notes\n\n");
         md.append("- The proof covers the requests the prover replayed (JSON compared on each of them), not every use "
                 + "of the changed code: check the other callers.\n");
@@ -145,6 +169,15 @@ public final class Description {
                         .map(id -> "`" + id + "`").toList()))
                 .append("</sub>\n");
         return md.toString();
+    }
+
+    /** The application directory prefix of the fix's files ({@code demo-app/}), from the first changed file. */
+    static String appPrefix(Set<String> files) {
+        for (String f : files) {
+            int src = f.indexOf("src/");
+            if (src >= 0) return f.substring(0, src);
+        }
+        return "";
     }
 
     static String number(double n) {

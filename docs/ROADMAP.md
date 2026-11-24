@@ -64,8 +64,9 @@ asserted by `FixIT` from reference patches) done.
 
 ## Phase 5 — Merge requests
 Status: step 1 (selection of the proven fixes, one mergeable MR each: redundant fixes not opened, conflicting
-ones deferred and proven again after the merge; descriptions from the proof; dry run) done. Next: regression
-tests proven red / green, the GitHub API (GitLab later), a sandbox repository for the demo, scorecard.
+ones deferred and proven again after the merge; descriptions from the proof; dry run) and step 2 (a regression
+test per MR, written by the LLM, proven red on the current code and green with the fix by Maven) done. Next: the
+GitHub API (GitLab later), a sandbox repository for the demo, scorecard.
 - Opened through the GitLab/GitHub API, one MR per fix
 - Description: problem, proof (before/after), plan, added tests
 - No automatic merge or deployment: human review is mandatory

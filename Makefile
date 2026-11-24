@@ -36,10 +36,10 @@ verify: ## Unit + integration tests (Testcontainers, needs Docker); LlmFixIT is 
 	./mvnw -B verify
 
 .PHONY: llm-it
-llm-it: ## LLM fixes of traps 1, 3, 5, 6 proven end to end (real Claude API calls, billed; needs ANTHROPIC_API_KEY + Docker)
+llm-it: ## LLM fixes of traps 1, 3, 5, 6 and the regression tests of the demo MRs, proven end to end (real Claude API calls, billed; needs ANTHROPIC_API_KEY + Docker)
 	@test -n "$$ANTHROPIC_API_KEY" || { echo "ANTHROPIC_API_KEY is not set"; exit 2; }
 	./mvnw -B -q -pl core,agent -am install -DskipTests
-	./mvnw -B -pl analyzer verify -Dtest=none -Dsurefire.failIfNoSpecifiedTests=false -Dit.test=LlmFixIT -Dfq.llm.it=true
+	./mvnw -B -pl analyzer verify -Dtest=none -Dsurefire.failIfNoSpecifiedTests=false -Dit.test=LlmFixIT,LlmTestIT -Dfq.llm.it=true
 
 # ---------------------------------------------------------------- local playground (no Kubernetes)
 .PHONY: db-grants-local
@@ -84,9 +84,10 @@ fix-local: ## Generate fixes from target/analysis (templates, then Claude) and p
 	  $(if $(EFFORT),--effort $(EFFORT)) $(if $(FINDING),--finding $(FINDING))
 
 .PHONY: mr-local
-mr-local: ## Merge requests of the proven fixes in target/fixes (phase 5, dry run: nothing pushed) -> target/mr
+mr-local: ## Merge requests of the proven fixes in target/fixes, each with a regression test proven red/green by Claude (phase 5, dry run: nothing pushed) ([LLM=off] [RETRIES=2]); needs Docker + ANTHROPIC_API_KEY -> target/mr
 	./mvnw -B -q -pl core,analyzer -am package -DskipTests
-	java -jar analyzer/target/flairquery-analyzer.jar mr --fixes target/fixes --bundles target/analysis
+	java -jar analyzer/target/flairquery-analyzer.jar mr --fixes target/fixes --bundles target/analysis \
+	  --llm $(or $(LLM),claude) --test-retries $(or $(RETRIES),2) $(if $(MODEL),--model $(MODEL)) $(if $(EFFORT),--effort $(EFFORT))
 
 .PHONY: openlibrary
 openlibrary: ## Stream Open Library dumps and cache a small subset (~/.cache/flairquery/openlibrary)
