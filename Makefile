@@ -89,6 +89,14 @@ mr-local: ## Merge requests of the proven fixes in target/fixes, each with a reg
 	java -jar analyzer/target/flairquery-analyzer.jar mr --fixes target/fixes --bundles target/analysis \
 	  --llm $(or $(LLM),claude) --test-retries $(or $(RETRIES),2) $(if $(MODEL),--model $(MODEL)) $(if $(EFFORT),--effort $(EFFORT))
 
+.PHONY: sandbox-init sandbox-publish
+SANDBOX ?= $(shell gh api user -q .login 2>/dev/null)/flairquery-demo
+sandbox-init: ## Create or refresh the public sandbox repo of the demo (SANDBOX=owner/name, default <you>/flairquery-demo; DRY_RUN=1 to only assemble target/sandbox); needs gh auth
+	scripts/sandbox-init.sh $(SANDBOX) $(if $(DRY_RUN),--dry-run)
+
+sandbox-publish: ## Open the merge requests of target/mr as pull requests on the sandbox (token from gh auth, or GITHUB_TOKEN)
+	GITHUB_TOKEN=$${GITHUB_TOKEN:-$$(gh auth token)} $(MAKE) --no-print-directory mr-publish GITHUB_REPO=$(SANDBOX) TARGET_DIR=.
+
 .PHONY: mr-publish
 mr-publish: ## Open the merge requests of target/mr as GitHub pull requests (GITHUB_REPO=owner/name [BASE=main] [TARGET_DIR=.] [DRAFT=true]); needs GITHUB_TOKEN
 	@test -n "$(GITHUB_REPO)" || { echo "GITHUB_REPO=owner/name is required"; exit 2; }

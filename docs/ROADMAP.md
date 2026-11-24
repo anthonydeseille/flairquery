@@ -67,7 +67,8 @@ Status: step 1 (selection of the proven fixes, one mergeable MR each: redundant 
 ones deferred and proven again after the merge; descriptions from the proof; dry run) and step 2 (a regression
 test per MR, written by the LLM, proven red on the current code and green with the fix by Maven) and step 3
 (`publish`: branch + pull request on GitHub, idempotent, closed requests never reopened; GitLab later) done.
-Next: a sandbox repository for the demo, scorecard.
+Step 4 (public sandbox repository for the demo's pull requests, `make sandbox-init` / `make sandbox-publish`)
+prepared. Next: scorecard.
 - Opened through the GitLab/GitHub API, one MR per fix
 - Description: problem, proof (before/after), plan, added tests
 - No automatic merge or deployment: human review is mandatory

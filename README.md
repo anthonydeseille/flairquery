@@ -700,6 +700,23 @@ make mr-publish GITHUB_REPO=owner/name [BASE=main] [TARGET_DIR=.] [DRAFT=true]
 Unit-tested against a fake GitHub API and a local bare repository (`PublisherTest`); GitLab comes later behind
 the same `Forge` interface.
 
+### The demo's sandbox repository
+
+The demo's pull requests cannot go to this repository (merging one would remove a trap from the demo). They go to
+a public sandbox, `<you>/flairquery-demo`: a copy of `demo-app/` at its root with the Maven wrapper, a README saying
+what it is (pull requests opened by FlairQuery, left open, never merged) and a CI running the demo's tests on every
+pull request, so the regression test of each fix runs green on GitHub too.
+
+```bash
+make sandbox-init DRY_RUN=1   # assemble target/sandbox only (nothing leaves the machine)
+make sandbox-init             # create it if missing (public, issues and wiki off) and push main = demo-app
+make fix-local && make mr-local && make sandbox-publish   # fixes, merge requests + tests, pull requests
+```
+
+`sandbox-init` adds a commit to `main` only when `demo-app/` changed; `sandbox-publish` uses the GitHub CLI's token
+(`gh auth token`) unless `GITHUB_TOKEN` is set. Checked locally: the assembled sandbox builds and passes its tests
+standalone (`mvnw verify`), and the three demo merge requests (fix + regression test) apply on it.
+
 ## Collector (phase 2)
 
 `flairquery-collector` periodically reads the observed PostgreSQL with the read-only `fq_reader` role
