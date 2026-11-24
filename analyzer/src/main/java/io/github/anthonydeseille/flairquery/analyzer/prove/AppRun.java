@@ -16,8 +16,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -157,29 +159,28 @@ final class AppRun implements AutoCloseable {
     }
 
     /**
-     * Distinct free ports: all sockets are held open together, so the same port is never returned twice. Each
-     * port is also bound on the loopback address: on macOS a wildcard bind succeeds on a port another process
-     * (colima / Docker port forwarding) holds on 127.0.0.1, and the application would then fail to start.
+     * Distinct free ports. Each port is free on the wildcard address and also on the loopback address: on macOS
+     * a wildcard bind succeeds on a port another process (colima / Docker port forwarding) holds on 127.0.0.1,
+     * and the application would then fail to start. The two binds are sequential, not nested: Linux refuses a
+     * loopback bind on a port a wildcard socket of the same process still listens on.
      */
     static int[] freePorts(int n) throws IOException {
-        List<ServerSocket> sockets = new ArrayList<>();
-        try {
-            int[] ports = new int[n];
-            int found = 0;
-            for (int attempt = 0; found < n && attempt < 50; attempt++) {
-                ServerSocket any = new ServerSocket(0);
-                sockets.add(any);
-                try {
-                    sockets.add(new ServerSocket(any.getLocalPort(), 50, InetAddress.getLoopbackAddress()));
-                } catch (IOException taken) {
-                    continue;
-                }
-                ports[found++] = any.getLocalPort();
+        Set<Integer> seen = new HashSet<>();
+        int[] ports = new int[n];
+        int found = 0;
+        for (int attempt = 0; found < n && attempt < 50; attempt++) {
+            int port;
+            try (ServerSocket any = new ServerSocket(0)) {
+                port = any.getLocalPort();
             }
-            if (found < n) throw new IOException("no free port found");
-            return ports;
-        } finally {
-            for (ServerSocket s : sockets) s.close();
+            if (!seen.add(port)) continue;
+            try (ServerSocket loopback = new ServerSocket(port, 50, InetAddress.getLoopbackAddress())) {
+                ports[found++] = loopback.getLocalPort();
+            } catch (IOException taken) {
+                // held on 127.0.0.1 by another process: try another one
+            }
         }
+        if (found < n) throw new IOException("no free port found");
+        return ports;
     }
 }
