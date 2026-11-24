@@ -61,6 +61,9 @@ spec:
               value: "1.0"
             - name: FQ_HTTP_PORT
               value: "9464"
+            # HikariCP pool exposed as MBeans: read by the agent (/fq/jvm) for the pool x replicas check (phase 6)
+            - name: SPRING_DATASOURCE_HIKARI_REGISTER_MBEANS
+              value: "true"
           ports:
             - name: http
               containerPort: 8080

@@ -2,6 +2,9 @@ package io.github.anthonydeseille.flairquery.collector;
 
 import io.github.anthonydeseille.flairquery.collector.config.CollectorConfig;
 import io.github.anthonydeseille.flairquery.collector.config.Target;
+import io.github.anthonydeseille.flairquery.collector.infra.InfraCollector;
+import io.github.anthonydeseille.flairquery.collector.infra.KubeClient;
+import io.github.anthonydeseille.flairquery.collector.infra.KubernetesSource;
 import io.github.anthonydeseille.flairquery.collector.source.SqlLogPlanSource;
 import io.github.anthonydeseille.flairquery.collector.http.CollectorHttpServer;
 import io.github.anthonydeseille.flairquery.collector.log.Log;
@@ -31,6 +34,7 @@ public final class CollectorMain {
                 config.agentUrl() == null ? null
                         : new io.github.anthonydeseille.flairquery.collector.source.AgentSource(config.agentUrl()),
                 store, config.retention(), config.columnStatsInterval(), Clock.systemUTC());
+        collector.withInfra(infra(config, target));
         CollectorHttpServer http = new CollectorHttpServer(collector, store);
         int port = http.start(config.httpPort());
 
@@ -45,6 +49,25 @@ public final class CollectorMain {
                 config.interval().toSeconds(), "retentionHours", config.retention().toHours(), "httpPort", port, "plans", config.readPlans(),
                 "columnStatsMinutes", config.columnStatsInterval().toMinutes(),
                 "agent", config.agentUrl() == null ? "none" : config.agentUrl());
+    }
+
+    /** Phase 6: PostgreSQL settings always; Kubernetes pods, cAdvisor and every agent replica when in a cluster. */
+    static InfraCollector infra(CollectorConfig config, Target target) {
+        KubernetesSource k8s = null;
+        CollectorConfig.Kubernetes kc = config.kubernetes();
+        if (kc.enabled(KubeClient.inClusterAvailable(System.getenv()))) {
+            try {
+                String ns = kc.namespace() != null ? kc.namespace() : KubeClient.ownNamespace();
+                if (ns == null) throw new IllegalStateException("namespace unknown: set FQ_COLLECTOR_K8S_NAMESPACE");
+                k8s = new KubernetesSource(KubeClient.inCluster(System.getenv()), ns, kc.selector(), kc.cadvisor(),
+                        kc.agentPortName());
+                Log.info("kubernetes reading enabled", "namespace", ns, "selector", String.valueOf(kc.selector()),
+                        "cadvisor", kc.cadvisor(), "agentPort", kc.agentPortName());
+            } catch (Exception e) {
+                Log.warn("kubernetes reading disabled (pod resources and usage unavailable)", e);
+            }
+        }
+        return new InfraCollector(new PostgresSource(target), k8s, config.agentUrl());
     }
 
     private static void migrateWithRetry(Store store) throws Exception {

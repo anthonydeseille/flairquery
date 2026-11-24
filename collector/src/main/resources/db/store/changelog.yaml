@@ -8,3 +8,5 @@ databaseChangeLog:
       file: db/store/003-stats-marks.sql
   - include:
       file: db/store/004-agent-endpoints.sql
+  - include:
+      file: db/store/005-infra.sql

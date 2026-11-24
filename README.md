@@ -211,6 +211,7 @@ JDK HTTP server, read-only (`GET` only), on a daemon thread.
 | `/fq/profile` | phase 3 per-endpoint JPA profile: statements, rows and SQL time per request, entities loaded and attributes read, lazy loads (inside / outside a transaction, triggering statements), in-memory pagination, open-in-view, findings |
 | `/fq/findings` | phase 3 findings of every endpoint, most severe first, each with its evidence and the kind of fix |
 | `/fq/model` | entity models read from the `@Entity` annotations (attributes, fetch types with JPA defaults, large columns) |
+| `/fq/jvm` | phase 6 sizing signals from the platform MXBeans: heap, non-heap, memory pools (peak, usage after GC), buffer pools, GC count and time, threads, the memory and CPUs the JVM sees, `MaxRAMPercentage` and the other sizing flags, process RSS (Linux), HikariCP pools (from their MBeans: `spring.datasource.hikari.register-mbeans=true`) with the peaks of active connections and waiting threads sampled every second; also in `/metrics` (`fq_jvm_*`, `fq_hikari_connections`) |
 | `/fq/health` | `{"status":"UP"}` |
 
 JSON responses carry `schemaVersion` (currently `1`). Every in-memory structure is bounded (500 endpoints,
@@ -792,6 +793,35 @@ curl -s 'localhost:9465/fq/collector/snapshots' | jq
 curl -s 'localhost:9465/fq/collector/columns?table=review' | jq       # value-free pg_stats
 ```
 
+**Infrastructure signals (phase 6).** On every cycle the collector also reads, read-only, the sizing signals
+and stores them raw in fq-store (`fq_infra_sample`); `/fq/collector/infra?window=15m` summarizes them, facts
+only (the findings are the analyzer's `size` command, step 2):
+
+- **PostgreSQL**: memory and connection settings from `pg_settings` (`shared_buffers`, `work_mem`,
+  `effective_cache_size`, `max_connections`, reserved connections... with their value in bytes, source and
+  whether a restart is pending), `pg_stat_database` (temporary files and bytes written over the window, cache hit
+  ratio) and the client connections of `pg_stat_activity` counted by role, application and state (peak over the
+  window against `max_connections`); never a query text.
+- **Kubernetes** (in a pod with a service account, `FQ_COLLECTOR_K8S=auto`): the pods of the collector's
+  namespace (`FQ_COLLECTOR_K8S_SELECTOR`), per workload and container: requests and limits, restarts, last
+  termination (`OOMKilled`), startup time (container start to Ready); and, through the API server proxy to each
+  kubelet's cAdvisor, the CPU usage (p50 / p95 / max from counter rates), the CFS throttling ratio, the working
+  set and RSS peaks. RBAC: `get, list` on the pods of the namespace and `get` on `nodes/proxy`, which reaches the
+  whole kubelet API: acceptable on a local cluster, otherwise disable it with `FQ_COLLECTOR_K8S_CADVISOR=false`
+  (requests, limits, restarts and OOMKilled are still read).
+- **JVM** of every agent replica (the pods exposing the agent's named port, read on their pod IP; outside
+  Kubernetes the agent of `FQ_COLLECTOR_AGENT_URL`): heap max against the container memory, `MaxRAMPercentage`,
+  live set (heap used after GC), non-heap and metaspace, RSS, GC time ratio, peak threads, HikariCP pool size and
+  peaks.
+
+No Prometheus is needed. The infrastructure traps planted in the manifests are listed in
+[TRAPS.md](demo-app/TRAPS.md#infrastructure-traps-phase-6).
+
+```bash
+kubectl -n fq-dev port-forward svc/fq-collector 9465 &
+curl -s 'localhost:9465/fq/collector/infra?window=15m' | jq '.containers[] | {workload, container, requests, limits, cpu, memory, restarts, oomKilled}'
+```
+
 Measuring a fix (here trap 4, the missing index on `review.reviewer_name`):
 
 ```bash
@@ -847,7 +877,12 @@ configuration) — `make collector-local` re-applies the `fq_reader` grants itse
 | `FQ_COLLECTOR_PLANS` | `true` | read auto_explain plans from the JSON server log |
 | `FQ_COLLECTOR_LOG_MAX_MB` | `64` | maximum log read per cycle (the rest is read next cycle) |
 | `FQ_COLLECTOR_COLUMN_STATS_MINUTES` | `10` | minutes between `pg_stats` reads (`0`: disabled) |
-| `FQ_COLLECTOR_AGENT_URL` | *(none)* | agent of the observed service (`http://demo-app:9464`): HTTP request counts per endpoint, so comparisons are also given per request |
+| `FQ_COLLECTOR_AGENT_URL` | *(none)* | agent of the observed service (`http://demo-app:9464`): HTTP request counts per endpoint, so comparisons are also given per request; outside Kubernetes, also its JVM signals |
+| `FQ_COLLECTOR_K8S` | `auto` | read the Kubernetes API (`auto`: when running in a pod with a service account; `true`, `false`) |
+| `FQ_COLLECTOR_K8S_NAMESPACE` | own namespace | namespace of the pods read |
+| `FQ_COLLECTOR_K8S_SELECTOR` | *(none: every pod)* | label selector of the pods read (`app.kubernetes.io/part-of=flairquery`) |
+| `FQ_COLLECTOR_K8S_CADVISOR` | `true` | read CPU usage, throttling and memory from the kubelets' cAdvisor (needs `get` on `nodes/proxy`) |
+| `FQ_COLLECTOR_AGENT_PORT_NAME` | `fq-metrics` | container port name of the agent: its JVM signals are read on every replica's pod IP |
 
 ### PostgreSQL settings and their cost
 

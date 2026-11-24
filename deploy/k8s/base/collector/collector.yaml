@@ -1,5 +1,57 @@
 # FlairQuery collector (phase 2): one target, the demo PostgreSQL, read with the read-only fq_reader role.
 # Writes only into fq-store. Its HTTP API (/fq/collector/*) and /metrics listen on 9465.
+# Phase 6: also reads, read-only, the pods of its namespace (resources, restarts, OOMKilled), the kubelet's cAdvisor
+# metrics through the API server proxy (usage, CPU throttling) and the JVM of every agent replica (pod IP).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fq-collector
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: fq-collector-pods
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: fq-collector-pods
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: fq-collector-pods
+subjects:
+  - kind: ServiceAccount
+    name: fq-collector
+---
+# cAdvisor through /api/v1/nodes/<node>/proxy/metrics/cadvisor. CAUTION: `nodes/proxy` reaches the whole kubelet API
+# of every node, a broad permission; acceptable on a local kind cluster. Without it (FQ_COLLECTOR_K8S_CADVISOR=false)
+# the collector still reads requests, limits, restarts and OOMKilled, not the usage nor the throttling.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fq-collector-cadvisor
+rules:
+  - apiGroups: [""]
+    resources: [nodes/proxy]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fq-collector-cadvisor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fq-collector-cadvisor
+subjects:
+  - kind: ServiceAccount
+    name: fq-collector
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -24,6 +76,7 @@ spec:
         prometheus.io/port: "9465"
         prometheus.io/path: /metrics
     spec:
+      serviceAccountName: fq-collector
       containers:
         - name: collector
           image: flairquery/collector:dev
@@ -48,6 +101,9 @@ spec:
             # the agent of the observed service: HTTP request counts, for per-request comparisons
             - name: FQ_COLLECTOR_AGENT_URL
               value: http://demo-app:9464
+            # phase 6: pods watched in the collector's namespace (every replica's agent is read on its pod IP)
+            - name: FQ_COLLECTOR_K8S_SELECTOR
+              value: app.kubernetes.io/part-of=flairquery
           ports:
             - name: http
               containerPort: 9465

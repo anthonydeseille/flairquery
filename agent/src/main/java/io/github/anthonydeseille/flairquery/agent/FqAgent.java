@@ -9,6 +9,7 @@ import io.github.anthonydeseille.flairquery.agent.jdbc.ResultSetNextAdvice;
 import io.github.anthonydeseille.flairquery.agent.jdbc.SqlArgumentAdvice;
 import io.github.anthonydeseille.flairquery.agent.jdbc.StatementExecuteAdvice;
 import io.github.anthonydeseille.flairquery.agent.log.JsonLog;
+import io.github.anthonydeseille.flairquery.agent.metrics.JvmMetrics;
 import io.github.anthonydeseille.flairquery.agent.orm.CollectionInitializeAdvice;
 import io.github.anthonydeseille.flairquery.agent.orm.EntityGetterAdvice;
 import io.github.anthonydeseille.flairquery.agent.orm.EntityLoadedAdvice;
@@ -71,6 +72,7 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 public final class FqAgent {
 
     private static final String SELF = "io.github.anthonydeseille.flairquery.";
+    static final long JVM_SAMPLER_DELAY_MS = 15_000;
 
     private FqAgent() { }
 
@@ -124,8 +126,12 @@ public final class FqAgent {
             }
             throw t;
         }
-        FqHttpServer http = new FqHttpServer(runtime.registry(), runtime.profiles());
-        http.start(config.httpPort()); // failure only disables the endpoints
+        JvmMetrics jvm = new JvmMetrics();
+        FqHttpServer http = new FqHttpServer(runtime.registry(), runtime.profiles(), jvm);
+        if (http.start(config.httpPort())) { // failure only disables the endpoints
+            // HikariCP peaks: first sample once the application had time to start (MBean server untouched before)
+            jvm.startSampler(JVM_SAMPLER_DELAY_MS, 1000);
+        }
         JsonLog.info("agent started",
                 "app", config.appName(),
                 "basePackages", config.basePackages(),
@@ -134,7 +140,7 @@ public final class FqAgent {
                 "profile", config.profile(),
                 "profileSample", config.profileSample(),
                 "httpPort", http.port());
-        return new Installation(runtime, transformer, inst, http);
+        return new Installation(runtime, transformer, inst, http, jvm);
     }
 
     /**
@@ -329,11 +335,12 @@ public final class FqAgent {
 
     /** Handle on an installed agent (used by tests and, later, by the HTTP server lifecycle). */
     public record Installation(FqRuntime runtime, ResettableClassFileTransformer transformer, Instrumentation inst,
-                               FqHttpServer http) {
+                               FqHttpServer http, JvmMetrics jvm) {
 
         public void uninstall() {
             Fq.reset();
             http.stop();
+            jvm.stopSampler();
             transformer.reset(inst, AgentBuilder.RedefinitionStrategy.RETRANSFORMATION);
         }
     }

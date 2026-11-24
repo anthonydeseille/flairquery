@@ -17,7 +17,19 @@ public record CollectorConfig(
         long logMaxBytesPerCycle,
         Duration columnStatsInterval,
         String agentUrl,
-        boolean debug) {
+        boolean debug,
+        Kubernetes kubernetes) {
+
+    /**
+     * Kubernetes reading (phase 6). {@code mode}: auto (when running in a pod with a service account), true, false.
+     * {@code namespace} null: the collector's own namespace; {@code selector} null: every pod of the namespace.
+     */
+    public record Kubernetes(String mode, String namespace, String selector, boolean cadvisor, String agentPortName) {
+
+        public boolean enabled(boolean inCluster) {
+            return "true".equalsIgnoreCase(mode) || ("auto".equalsIgnoreCase(mode) && inCluster);
+        }
+    }
 
     public static CollectorConfig fromEnv(Map<String, String> env) {
         String url = required(env, "FQ_COLLECTOR_TARGET_URL");
@@ -38,7 +50,13 @@ public record CollectorConfig(
                 positive(env, "FQ_COLLECTOR_LOG_MAX_MB", 64) * 1024 * 1024,
                 Duration.ofMinutes(positive(env, "FQ_COLLECTOR_COLUMN_STATS_MINUTES", 10)),
                 blankToNull(env.get("FQ_COLLECTOR_AGENT_URL")),
-                "debug".equalsIgnoreCase(env.getOrDefault("FQ_COLLECTOR_LOG_LEVEL", "info")));
+                "debug".equalsIgnoreCase(env.getOrDefault("FQ_COLLECTOR_LOG_LEVEL", "info")),
+                new Kubernetes(
+                        env.getOrDefault("FQ_COLLECTOR_K8S", "auto").trim(),
+                        blankToNull(env.get("FQ_COLLECTOR_K8S_NAMESPACE")),
+                        blankToNull(env.get("FQ_COLLECTOR_K8S_SELECTOR")),
+                        !"false".equalsIgnoreCase(env.getOrDefault("FQ_COLLECTOR_K8S_CADVISOR", "true")),
+                        env.getOrDefault("FQ_COLLECTOR_AGENT_PORT_NAME", "fq-metrics").trim()));
     }
 
     static String hostOf(String jdbcUrl) {

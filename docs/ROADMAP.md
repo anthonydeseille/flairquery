@@ -76,6 +76,13 @@ scope, witness clean; asserted by `FixIT` from the frozen fixes and tests) done:
 - No automatic merge or deployment: human review is mandatory
 
 ## Phase 6 — Infrastructure right-sizing
+Status: step 1 (ground truth and signals) done: infrastructure traps I1-I6 and the witness in `TRAPS.md`; the
+agent's `/fq/jvm` (heap, live set, non-heap, GC, threads, `MaxRAMPercentage`, RSS, HikariCP pools and peaks
+from their MBeans); the collector reads, without Prometheus, the pods (requests, limits, restarts, OOMKilled,
+startup), the kubelets' cAdvisor (CPU usage, throttling, working set) through the API server proxy, the JVM of
+every replica, and `pg_settings` / `pg_stat_database` / `pg_stat_activity`, summarized by
+`/fq/collector/infra`. Next: step 2, the deterministic `size` command (findings with evidence, no LLM), then the
+infra prover on kind, the Kustomize merge requests, the scorecard and release 0.6.0.
 - API pods: requests/limits from the real p95, CPU throttling, JVM heap/GC,
   `MaxRAMPercentage` consistent with the memory limit; VPA in recommendation mode as a source
 - Database: `work_mem` (from `temp_blks_written`), `shared_buffers`, `effective_cache_size`

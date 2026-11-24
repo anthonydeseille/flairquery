@@ -68,7 +68,7 @@ class CollectorIT {
     @BeforeEach
     void freshStoreAndStats() throws Exception {
         try (Connection c = store.connect(); Statement st = c.createStatement()) {
-            st.execute("TRUNCATE fq_snapshot, fq_statement, fq_table, fq_plan, fq_log_cursor, fq_mark, fq_column_stats, fq_endpoint CASCADE");
+            st.execute("TRUNCATE fq_snapshot, fq_statement, fq_table, fq_plan, fq_log_cursor, fq_mark, fq_column_stats, fq_endpoint, fq_infra_sample CASCADE");
         }
         app("SELECT pg_stat_statements_reset()");
         Thread.sleep(50);
@@ -355,6 +355,65 @@ class CollectorIT {
         @Override
         public void close() {
             server.stop(0);
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void infraSignalsPostgresSettingsTempFilesConnectionsAndAgentJvm() throws Exception {
+        Target target = new Target("it", observed.getJdbcUrl(), "fq_reader", "fq_reader");
+        com.sun.net.httpserver.HttpServer agent = com.sun.net.httpserver.HttpServer.create(
+                new java.net.InetSocketAddress("127.0.0.1", 0), 4);
+        agent.createContext("/fq/jvm", ex -> {
+            byte[] body = ("{\"schemaVersion\":1,\"app\":\"demo\",\"jvm\":{\"runtime\":{\"uptimeMs\":60000},"
+                    + "\"flags\":{\"MaxRAMPercentage\":{\"value\":\"80.000000\",\"origin\":\"ENVIRON_VAR\"}},"
+                    + "\"heap\":{\"usedBytes\":1000,\"maxBytes\":4000},\"hikari\":[{\"pool\":\"HikariPool-1\","
+                    + "\"maximumPoolSize\":10,\"peakActive\":10,\"peakWaiting\":2}]}}")
+                    .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            ex.sendResponseHeaders(200, body.length);
+            try (var os = ex.getResponseBody()) {
+                os.write(body);
+            }
+        });
+        agent.start();
+        try {
+            String agentUrl = "http://127.0.0.1:" + agent.getAddress().getPort();
+            Collector withInfra = new Collector(new PostgresSource(target), null, null, store, Duration.ofHours(72),
+                    Duration.ZERO, Clock.systemUTC())
+                    .withInfra(new io.github.anthonydeseille.flairquery.collector.infra.InfraCollector(
+                            new PostgresSource(target), null, agentUrl));
+            withInfra.collectOnce();
+            // work_mem = 64kB (shared configuration): this sort spills to temporary files
+            app("SELECT g FROM generate_series(1, 200000) g ORDER BY md5(g::text)");
+            try (Connection idle = DriverManager.getConnection(observed.getJdbcUrl(), "flairquery", "flairquery")) {
+                withInfra.collectOnce();
+            }
+
+            CollectorHttpServer http = new CollectorHttpServer(withInfra, store);
+            int port = http.start(0);
+            try {
+                String body = HttpClient.newHttpClient().send(HttpRequest.newBuilder(URI.create("http://localhost:" + port
+                        + "/fq/collector/infra?window=1h")).build(), HttpResponse.BodyHandlers.ofString()).body();
+                Map<String, Object> infra = new com.fasterxml.jackson.databind.ObjectMapper().readValue(body, Map.class);
+                Map<String, Object> pg = (Map<String, Object>) infra.get("postgres");
+                Map<String, Object> settings = (Map<String, Object>) pg.get("settings");
+                assertThat((Map<String, Object>) settings.get("work_mem")).containsEntry("bytes", 65536);
+                assertThat((Map<String, Object>) settings.get("shared_buffers")).containsEntry("bytes", 32 * 1024 * 1024);
+                assertThat((Map<String, Object>) settings.get("max_connections")).containsEntry("setting", "50");
+                assertThat(((Number) ((Map<String, Object>) pg.get("database")).get("tempBytes")).longValue()).isPositive();
+                Map<String, Object> conns = (Map<String, Object>) pg.get("connections");
+                assertThat(((Number) conns.get("clientPeak")).longValue()).isGreaterThanOrEqualTo(2);   // idle + collector
+                assertThat((Map<String, Object>) conns.get("peakByRole")).containsKey("flairquery");
+                Map<String, Object> jvm = ((List<Map<String, Object>>) infra.get("jvms")).get(0);
+                assertThat(jvm).containsEntry("subject", agentUrl).containsEntry("maxRamPercentage", "80.000000")
+                        .containsEntry("samples", 2);
+                assertThat((List<?>) infra.get("containers")).isEmpty();   // not in a cluster
+                assertThat((Map<String, Object>) infra.get("sources")).containsEntry("kubernetes", -1).containsEntry("jvmRead", 1);
+            } finally {
+                http.stop();
+            }
+        } finally {
+            agent.stop(0);
         }
     }
 

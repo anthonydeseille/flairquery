@@ -30,6 +30,7 @@ public final class Collector {
     private final Duration columnStatsInterval;   // zero: pg_stats not read
     private final io.github.anthonydeseille.flairquery.collector.source.AgentSource agentSource;   // null: none
     private Instant lastColumnStats;
+    private io.github.anthonydeseille.flairquery.collector.infra.InfraCollector infra;   // null: not read
 
     final AtomicLong columnStats = new AtomicLong();
     final AtomicLong lastCycleMicros = new AtomicLong();
@@ -54,6 +55,16 @@ public final class Collector {
         this.store = store;
         this.retention = retention;
         this.clock = clock;
+    }
+
+    /** Phase 6: infrastructure signals read on every cycle, after the statistics. */
+    public Collector withInfra(io.github.anthonydeseille.flairquery.collector.infra.InfraCollector infra) {
+        this.infra = infra;
+        return this;
+    }
+
+    public io.github.anthonydeseille.flairquery.collector.infra.InfraCollector infra() {
+        return infra;
     }
 
     public String target() {
@@ -171,6 +182,7 @@ public final class Collector {
         int purged = store.deleteSnapshotsBefore(target(), now.minus(retention));
 
         maybeRefreshColumnStats(now);
+        collectInfra(now);
 
         cycles.incrementAndGet();
         lastSuccess.set(now);
@@ -184,6 +196,19 @@ public final class Collector {
                     + "consider raising pg_stat_statements.max", null, "target", target(), "evicted", deallocDelta);
         }
         return cycle;
+    }
+
+    /** An enrichment: never fails the cycle. */
+    private void collectInfra(Instant now) {
+        if (infra == null) return;
+        try {
+            var samples = infra.read();
+            store.saveInfra(target(), now, samples);
+            store.deleteInfraBefore(target(), now.minus(retention));
+            Log.debug("infrastructure", "target", target(), "samples", samples.size());
+        } catch (Exception e) {
+            Log.warn("infrastructure samples not stored this cycle", e, "target", target());
+        }
     }
 
     /**

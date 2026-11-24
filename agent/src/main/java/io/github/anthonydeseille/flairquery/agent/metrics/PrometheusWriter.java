@@ -11,6 +11,11 @@ public final class PrometheusWriter {
     private PrometheusWriter() { }
 
     public static String write(Registry r) {
+        return write(r, null);
+    }
+
+    /** @param jvm a {@link JvmMetrics#snapshot()}, or null to leave the JVM families out */
+    public static String write(Registry r, Map<String, Object> jvm) {
         StringBuilder sb = new StringBuilder(4096);
         Map<String, Registry.EndpointStats> eps = r.endpointStats();
 
@@ -34,7 +39,66 @@ public final class PrometheusWriter {
         sb.append("# HELP fq_agent_active 1 when instrumentation is active, 0 after the circuit breaker opened\n")
           .append("# TYPE fq_agent_active gauge\n")
           .append("fq_agent_active{app=\"").append(escape(r.app())).append("\"} ").append(Fq.isActive() ? 1 : 0).append('\n');
+        if (jvm != null) {
+            jvm(sb, escape(r.app()), jvm);
+        }
         return sb.toString();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void jvm(StringBuilder sb, String app, Map<String, Object> jvm) {
+        String base = "app=\"" + app + "\"";
+        java.util.List<String[]> lines = new java.util.ArrayList<>();
+        if (jvm.get("heap") instanceof Map<?, ?> h) {
+            lines.add(sample("fq_jvm_memory_used_bytes", base + ",area=\"heap\"", ((Map<String, Object>) h).get("usedBytes")));
+            lines.add(sample("fq_jvm_memory_max_bytes", base + ",area=\"heap\"", ((Map<String, Object>) h).get("maxBytes")));
+        }
+        if (jvm.get("nonHeap") instanceof Map<?, ?> h) {
+            lines.add(sample("fq_jvm_memory_used_bytes", base + ",area=\"nonheap\"", ((Map<String, Object>) h).get("usedBytes")));
+        }
+        if (jvm.get("runtime") instanceof Map<?, ?> rt) {
+            lines.add(sample("fq_jvm_rss_bytes", base, ((Map<String, Object>) rt).get("rssBytes")));
+            lines.add(sample("fq_jvm_container_memory_bytes", base, ((Map<String, Object>) rt).get("containerMemoryBytes")));
+        }
+        if (jvm.get("gc") instanceof java.util.List<?> gcs) {
+            for (Object o : gcs) {
+                Map<String, Object> g = (Map<String, Object>) o;
+                String l = base + ",gc=\"" + escape(String.valueOf(g.get("name"))) + "\"";
+                lines.add(sample("fq_jvm_gc_collections", l, g.get("count")));
+                Object ms = g.get("timeMs");
+                lines.add(sample("fq_jvm_gc_time_seconds", l, ms instanceof Number n ? n.doubleValue() / 1000 : null));
+            }
+        }
+        if (jvm.get("threads") instanceof Map<?, ?> t) {
+            lines.add(sample("fq_jvm_threads", base + ",state=\"live\"", ((Map<String, Object>) t).get("live")));
+            lines.add(sample("fq_jvm_threads", base + ",state=\"peak\"", ((Map<String, Object>) t).get("peak")));
+        }
+        if (jvm.get("hikari") instanceof java.util.List<?> pools) {
+            for (Object o : pools) {
+                Map<String, Object> p = (Map<String, Object>) o;
+                String l = base + ",pool=\"" + escape(String.valueOf(p.get("pool"))) + "\"";
+                for (String state : new String[]{"active", "idle", "total", "waiting", "maximumPoolSize", "peakActive", "peakWaiting"}) {
+                    lines.add(sample("fq_hikari_connections", l + ",state=\"" + state + "\"", p.get(state)));
+                }
+            }
+        }
+        lines.removeIf(java.util.Objects::isNull);
+        lines.sort(java.util.Comparator.comparing(l -> l[0]));   // stable: a family's samples stay together, in order
+        String current = null;
+        for (String[] line : lines) {
+            if (!line[0].equals(current)) {
+                current = line[0];
+                sb.append("# TYPE ").append(current).append(' ')
+                  .append(current.endsWith("_collections") || current.endsWith("_seconds") ? "counter" : "gauge").append('\n');
+            }
+            sb.append(line[0]).append('{').append(line[1]).append("} ").append(line[2]).append('\n');
+        }
+    }
+
+    private static String[] sample(String name, String labels, Object value) {
+        if (!(value instanceof Number n)) return null;
+        double v = n.doubleValue();
+        return new String[]{name, labels, v == Math.rint(v) && !Double.isInfinite(v) ? Long.toString((long) v) : Double.toString(v)};
     }
 
     private static void family(StringBuilder sb, Registry r, Map<String, Registry.EndpointStats> eps, String name,

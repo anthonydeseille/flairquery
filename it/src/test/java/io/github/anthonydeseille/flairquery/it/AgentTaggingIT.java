@@ -18,7 +18,7 @@ class AgentTaggingIT {
 
     @BeforeAll
     static void start() throws Exception {
-        app = DemoAppProcess.start("agent", true, DemoAppProcess.env());
+        app = DemoAppProcess.start("agent", true, DemoAppProcess.env("SPRING_DATASOURCE_HIKARI_REGISTER_MBEANS", "true"));
         ItEnvironment.ensureSeeded();
         ItEnvironment.resetPgStatStatements();
         Traffic.run(app, 2);
@@ -55,6 +55,19 @@ class AgentTaggingIT {
         assertThat(authors.get("sql").asText()).contains("from book");
         assertThat(authors.get("maxQueriesPerRequest").asLong()).isEqualTo(20); // one per author
         assertThat(authors.get("caller").asText()).startsWith(DEMO + ".web.AuthorController#toDto:");
+    }
+
+    /** Phase 6: JVM signals and the Spring Boot HikariCP pool, read from the MBeans the pool registers. */
+    @Test
+    void jvmAndHikariPoolAreExposed() throws Exception {
+        JsonNode jvm = app.agentJson("/fq/jvm").get("jvm");
+        assertThat(jvm.get("heap").get("maxBytes").asLong()).isPositive();
+        assertThat(jvm.get("flags").has("MaxRAMPercentage")).isTrue();
+        assertThat(jvm.get("gc").size()).isPositive();
+        JsonNode pool = jvm.get("hikari").get(0);
+        assertThat(pool.get("maximumPoolSize").asInt()).isEqualTo(10);   // HIKARI_MAX_POOL default
+        assertThat(pool.get("total").asInt()).isPositive();
+        assertThat(pool.get("peakActive").isNumber()).isTrue();
     }
 
     @Test

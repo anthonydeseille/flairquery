@@ -4,6 +4,7 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import io.github.anthonydeseille.flairquery.agent.log.Json;
 import io.github.anthonydeseille.flairquery.agent.log.JsonLog;
+import io.github.anthonydeseille.flairquery.agent.metrics.JvmMetrics;
 import io.github.anthonydeseille.flairquery.agent.metrics.PrometheusWriter;
 import io.github.anthonydeseille.flairquery.agent.metrics.Registry;
 import io.github.anthonydeseille.flairquery.agent.profile.ProfileRegistry;
@@ -22,7 +23,7 @@ import java.util.concurrent.Executors;
 /**
  * Read-only HTTP endpoints on {@code FQ_HTTP_PORT}, served by the JDK HttpServer on one daemon thread:
  * {@code /metrics}, {@code /fq/top}, {@code /fq/nplusone}, {@code /fq/endpoints}, {@code /fq/profile},
- * {@code /fq/health}.
+ * {@code /fq/jvm} (JVM and HikariCP signals for infrastructure sizing), {@code /fq/health}.
  */
 public final class FqHttpServer {
 
@@ -32,6 +33,7 @@ public final class FqHttpServer {
 
     private final Registry registry;
     private final ProfileRegistry profiles;
+    private final JvmMetrics jvm;
     private HttpServer server;
     private ExecutorService executor;
 
@@ -40,8 +42,13 @@ public final class FqHttpServer {
     }
 
     public FqHttpServer(Registry registry, ProfileRegistry profiles) {
+        this(registry, profiles, new JvmMetrics());
+    }
+
+    public FqHttpServer(Registry registry, ProfileRegistry profiles, JvmMetrics jvm) {
         this.registry = registry;
         this.profiles = profiles;
+        this.jvm = jvm;
     }
 
     /** Never throws: a busy port or a JRE without jdk.httpserver only disables the endpoints. */
@@ -55,7 +62,7 @@ public final class FqHttpServer {
             });
             server.setExecutor(executor);
             server.createContext("/metrics", ex -> respond(ex, 200, "text/plain; version=0.0.4; charset=utf-8",
-                    PrometheusWriter.write(registry)));
+                    PrometheusWriter.write(registry, jvm.snapshot())));
             server.createContext("/fq/top", ex -> json(ex, Map.of("top", registry.top(limit(ex.getRequestURI())))));
             server.createContext("/fq/nplusone", ex -> json(ex, Map.of(
                     "threshold", registry.nPlusOneThreshold(), "nplusone", registry.nPlusOne())));
@@ -64,6 +71,7 @@ public final class FqHttpServer {
             server.createContext("/fq/findings", ex -> json(ex, Map.of("findings", profiles.findings())));
             server.createContext("/fq/model", ex -> json(ex, Map.of("entities",
                     io.github.anthonydeseille.flairquery.agent.model.EntityModels.describe())));
+            server.createContext("/fq/jvm", ex -> json(ex, Map.of("jvm", jvm.snapshot())));
             server.createContext("/fq/health", ex -> json(ex, Map.of("status", "UP")));
             server.createContext("/", ex -> respond(ex, 404, "application/json", "{\"error\":\"not found\"}"));
             startAsDaemon(server);

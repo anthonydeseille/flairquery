@@ -524,6 +524,59 @@ public final class Store {
         }
     }
 
+    // ---------------------------------------------------------------- infrastructure samples (phase 6)
+
+    public record StoredSample(Instant takenAt, String kind, String subject, Map<String, Object> payload) { }
+
+    public void saveInfra(String target, Instant takenAt, List<io.github.anthonydeseille.flairquery.collector.infra.InfraSample> samples)
+            throws Exception {
+        if (samples.isEmpty()) return;
+        try (Connection c = connect();
+             PreparedStatement ps = c.prepareStatement(
+                     "INSERT INTO fq_infra_sample (target, taken_at, kind, subject, payload) VALUES (?, ?, ?, ?, ?::jsonb)")) {
+            for (var s : samples) {
+                ps.setString(1, target);
+                ps.setTimestamp(2, Timestamp.from(takenAt));
+                ps.setString(3, s.kind());
+                ps.setString(4, s.subject());
+                ps.setString(5, JSON.writeValueAsString(s.payload()));
+                ps.addBatch();
+            }
+            ps.executeBatch();
+        }
+    }
+
+    /** Samples of one kind since a date, oldest first. */
+    public List<StoredSample> infraSamples(String target, String kind, Instant since) throws Exception {
+        List<StoredSample> out = new ArrayList<>();
+        try (Connection c = connect();
+             PreparedStatement ps = c.prepareStatement("""
+                     SELECT taken_at, kind, subject, payload::text FROM fq_infra_sample
+                     WHERE target = ? AND kind = ? AND taken_at >= ? ORDER BY taken_at, id""")) {
+            ps.setString(1, target);
+            ps.setString(2, kind);
+            ps.setTimestamp(3, Timestamp.from(since));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> payload = JSON.readValue(rs.getString(4), Map.class);
+                    out.add(new StoredSample(rs.getTimestamp(1).toInstant(), rs.getString(2), rs.getString(3), payload));
+                }
+            }
+        }
+        return out;
+    }
+
+    /** Retention of the infrastructure samples. */
+    public int deleteInfraBefore(String target, Instant cutoff) throws SQLException {
+        try (Connection c = connect();
+             PreparedStatement ps = c.prepareStatement("DELETE FROM fq_infra_sample WHERE target = ? AND taken_at < ?")) {
+            ps.setString(1, target);
+            ps.setTimestamp(2, Timestamp.from(cutoff));
+            return ps.executeUpdate();
+        }
+    }
+
     // ---------------------------------------------------------------- read side (HTTP API)
 
     public enum Order {

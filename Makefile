@@ -17,7 +17,7 @@ DEMO_JAR  := demo-app/target/flairquery-demo-app.jar
 COLLECTOR_JAR := collector/target/flairquery-collector.jar
 LOCAL_COMPOSE := deploy/local/compose.yaml
 LOCAL_PG := PGHOST=localhost PGPORT=5432 PGUSER=flairquery PGPASSWORD=flairquery PGDATABASE=flairquery
-FQ_LOCAL_ENV := FQ_APP_NAME=demo-app FQ_BASE_PACKAGES=io.github.anthonydeseille.flairquery.demo
+FQ_LOCAL_ENV := FQ_APP_NAME=demo-app FQ_BASE_PACKAGES=io.github.anthonydeseille.flairquery.demo SPRING_DATASOURCE_HIKARI_REGISTER_MBEANS=true
 
 .PHONY: help
 help: ## List targets

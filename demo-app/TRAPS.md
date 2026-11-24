@@ -28,6 +28,25 @@ reviewer `Alice Martin 00000`, witness publisher 1.
 | 7 | **Large sort spilling to disk** | `GET /reviews/ranking?page=400&size=50` | `ReviewRepository#ranking` (`order by created_at desc, comment` + OFFSET 20000) | `Sort Method: external merge Disk`, `temp_blks_written > 0` in `pg_stat_statements` | ⚠️ partial: `/fq/top` + `temp_blks_written`. Analysis in phase 2, `work_mem` sizing in phase 6 | ✅ DETECTED: `temp_blks_written` > 0 and a Sort on `created_at DESC, comment` in the plan | — (database side: phase 2) | — out of phase 4: keyset pagination changes the API, `work_mem` is phase 6 | — out of scope (no fix in phase 4) | Index on `(created_at desc)` + keyset pagination; or adjusted `work_mem` (phase 6, after the code fix) |
 | ✓ | **Clean witness** | `GET /publishers/1` | `PublisherRepository#findDtoById` | 1 query, PK lookup, DTO projection | ✅ **never flagged** | ✅ CLEAN: Index Scan only, never flagged | ✅ CLEAN: DTO projection, no entity loaded, no finding | ✅ CLEAN: no fix targets it; JSON identical under every proven fix | ✅ CLEAN: no merge request targets it | — |
 
+## Infrastructure traps (phase 6)
+
+Planted in the Kubernetes manifests (`deploy/k8s`), not in the code. Phase 6 measures them from the
+collector's `/fq/collector/infra` (pods and cAdvisor through the Kubernetes API, the JVM of every replica from
+the agent's `/fq/jvm`, `pg_settings` / `pg_stat_database` / `pg_stat_activity`), always **after** the code fixes
+of phases 4-5: a pod is never sized for the waste of an N+1. A sizing is accepted only when replayed on kind
+(same load, throwaway namespace) with no OOMKill, less throttling, a p95 not worse, a startup not slower, no
+refused connection and, for I4, `temp_blks_written` = 0 on trap 7.
+
+| # | Trap | Where | Expected signal (`/fq/collector/infra`) | Expected fix |
+|---|---|---|---|---|
+| I1 | **Heap too large for the memory limit**: `-XX:MaxRAMPercentage=80` with a 768Mi limit | `demo-app.yaml` (`JAVA_TOOL_OPTIONS`) | `jvms[].maxRamPercentage` 80 and `heapMaxBytes` ~614 MiB against `containerMemoryBytes` 768 MiB: ~154 MiB left for metaspace, code cache, threads and direct buffers (`nonHeapUsedMaxBytes`, `rssMaxBytes` close to the limit); OOMKilled under load (`containers[].oomKilled`, `lastTerminations`) | `MaxRAMPercentage` from the measured live set (`liveSetMaxBytes`) and non-heap, consistent with the limit (typically 60-70 %), or a limit raised to fit |
+| I2 | **Requests far below usage**: `cpu: 25m`, `memory: 64Mi` | `demo-app.yaml` (`resources.requests`) | `requests` against `cpu.usageP95Millis` and `memory.workingSetMaxBytes` (hundreds of MiB): the scheduler places the pod on a node that cannot hold it | requests from the measured p95 CPU and the memory peak |
+| I3 | **CPU limit too tight**: `cpu: 500m` | `demo-app.yaml` (`resources.limits`) | `cpu.throttledRatio` high during load and at startup, `startupSecondsMax` ~45 s+ | a higher limit (or none, with a request at the p95), checked against startup and p95 latency |
+| I4 | **`work_mem` 64kB**: trap 7's sort spills to disk | `postgresql-fq.conf` | `postgres.settings.work_mem` 64 KiB, `postgres.database.tempBytes` > 0 over the window, trap 7's `temp_blks_written` > 0 | `work_mem` sized from the spilled bytes (per role, reloadable), or trap 7's code fix first (keyset pagination) |
+| I5 | **`shared_buffers` 32MB** for a corpus of several GB | `postgresql-fq.conf` | `postgres.settings.shared_buffers` 32 MiB, `postgres.database.cacheHitRatio` low under load, PostgreSQL's working set far below its 1Gi limit | `shared_buffers` ~25 % of the container memory limit, `effective_cache_size` consistent (restart: human review only) |
+| I6 | **Pool × replicas > `max_connections`**: Hikari 20 × 3 replicas = 60 > 50 (47 for clients after the 3 reserved) | overlay `pool-overflow` | `jvms[].hikari[].maximumPoolSize` × the replicas of `containers[]` against `postgres.connections.maxConnections` - `reserved`; `peakWaiting` > 0, refused connections at startup or under load | a pool per replica such that pool × max replicas (HPA) + other clients ≤ `max_connections` - reserved, or a bouncer |
+| ✓ | **Clean witness**: the collector (`fq-collector`, requests 50m/128Mi, limits 500m/256Mi, a plain JVM) | `collector.yaml` | steady-state usage within its requests and limits, no OOMKill, no restart (its JVM startup is briefly throttled, as any JVM under a 500m limit: measured over a window that includes it, not a finding) | **never flagged** |
+
 ## Reference measurements (profile S, local, agent enabled)
 
 | Endpoint | SQL statements / call | Note |

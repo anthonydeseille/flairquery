@@ -7,6 +7,8 @@ import com.sun.net.httpserver.HttpServer;
 import io.github.anthonydeseille.flairquery.collector.Collector;
 import io.github.anthonydeseille.flairquery.collector.compare.Comparison;
 import io.github.anthonydeseille.flairquery.collector.compare.Periods;
+import io.github.anthonydeseille.flairquery.collector.infra.InfraSample;
+import io.github.anthonydeseille.flairquery.collector.infra.InfraSummary;
 import io.github.anthonydeseille.flairquery.collector.log.Log;
 import io.github.anthonydeseille.flairquery.collector.store.Store;
 
@@ -93,6 +95,7 @@ public final class CollectorHttpServer {
         server.createContext("/fq/collector/snapshots", ex -> handle(ex, q ->
                 body(q, "snapshots", store.snapshots(collector.target(),
                         Math.min(500, Integer.parseInt(q.getOrDefault("limit", "20")))))));
+        server.createContext("/fq/collector/infra", ex -> handle(ex, q -> infra(q)));
         server.createContext("/fq/collector/health", ex -> handle(ex, q -> {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("status", collector.lastSuccess() != null ? "UP" : "STARTING");
@@ -187,6 +190,23 @@ public final class CollectorHttpServer {
         }
     }
 
+    /** Phase 6: sizing signals over the window (facts, no recommendation). */
+    private Map<String, Object> infra(Map<String, String> q) throws Exception {
+        Instant since = since(q);
+        String t = collector.target();
+        Map<String, Object> m = body(q, "containers", InfraSummary.containers(
+                store.infraSamples(t, InfraSample.CONTAINER, since), since));
+        m.put("jvms", InfraSummary.jvms(store.infraSamples(t, InfraSample.JVM, since)));
+        m.put("postgres", InfraSummary.postgres(store.infraSamples(t, InfraSample.POSTGRES, since)));
+        Map<String, Object> sources = new LinkedHashMap<>();
+        var infra = collector.infra();
+        sources.put("kubernetes", infra == null ? -1 : infra.kubernetesUp());
+        sources.put("jvmRead", infra == null ? 0 : infra.jvmRead());
+        sources.put("jvmFailed", infra == null ? 0 : infra.jvmFailed());
+        m.put("sources", sources);
+        return m;
+    }
+
     private static Map<String, Object> markJson(Store.Mark m) {
         Map<String, Object> j = new LinkedHashMap<>();
         j.put("name", m.name());
@@ -228,6 +248,17 @@ public final class CollectorHttpServer {
               .append("# HELP fq_collector_column_stats Columns with pg_stats statistics stored\n")
               .append("# TYPE fq_collector_column_stats gauge\n")
               .append("fq_collector_column_stats{target=\"").append(t).append("\"} ").append(collector.columnStats()).append('\n');
+            var infra = collector.infra();
+            if (infra != null && infra.kubernetesUp() >= 0) {
+                sb.append("# HELP fq_collector_kubernetes_up 1 when the Kubernetes API was read on the last cycle\n")
+                  .append("# TYPE fq_collector_kubernetes_up gauge\n")
+                  .append("fq_collector_kubernetes_up{target=\"").append(t).append("\"} ").append(infra.kubernetesUp()).append('\n');
+            }
+            if (infra != null) {
+                sb.append("# HELP fq_collector_jvm_read Agents whose JVM metrics were read on the last cycle\n")
+                  .append("# TYPE fq_collector_jvm_read gauge\n")
+                  .append("fq_collector_jvm_read{target=\"").append(t).append("\"} ").append(infra.jvmRead()).append('\n');
+            }
             if (collector.agentUp() >= 0) {
                 sb.append("# HELP fq_collector_agent_up 1 when the agent endpoints were read on the last cycle\n")
                   .append("# TYPE fq_collector_agent_up gauge\n")
