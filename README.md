@@ -38,6 +38,7 @@ operator: see [docs/ROADMAP.md](docs/ROADMAP.md).
 - [Corpus](#corpus)
 - [Tests and CI](#tests-and-ci)
 - [Measured overhead](#measured-overhead)
+- [Analyzer (phase 4)](#analyzer-phase-4) / [Merge requests (phase 5)](#merge-requests-phase-5)
 - [Collector (phase 2)](#collector-phase-2)
 - [Kubernetes (kind) and K9s plugin](#kubernetes-kind-and-k9s-plugin)
 - [Fail-safe guarantees](#fail-safe-guarantees)
@@ -616,6 +617,36 @@ The reference patches are the LLM's own output, frozen so that `make verify` sta
 the demo changes and one no longer applies or proves, `make llm-it` asks the model again and its accepted patches
 replace them. Trap 7 stays for later: its fix (keyset pagination) changes the API, and `work_mem` belongs to
 phase 6, after the code fixes.
+
+## Merge requests (phase 5)
+
+Phase 5 turns the proven fixes into merge requests, one per fix, always left to a human review (never merged
+automatically). Step 1, local and without any forge call: `mr` decides which fixes to open and writes each merge
+request (branch, title, description, patch).
+
+```bash
+make fix-local         # proven fixes -> target/fixes
+make mr-local          # dry run -> target/mr/<fix>/description.md + .patch, target/mr/index.json
+```
+
+Every merge request must be mergeable on its own, in any order:
+
+1. only fixes the prover ACCEPTED; deterministic templates first, then the fixes resolving the most findings,
+   then the smallest change;
+2. a fix whose findings are all resolved by fixes already selected is **redundant**: not opened, named in the
+   merge request that covers it;
+3. a fix that does not apply on top of the fixes already selected (`git apply` on a copy) is **deferred**: it
+   was proven on the current code, so it is generated and proven again once the conflicting merge request is
+   merged, never rebased blindly.
+
+The description holds only what was measured: the findings resolved (kind, endpoint, severity, evidence), the
+change (generator, files), the proof (checks, statements and SQL time per request before / after for every
+replayed endpoint, plans for an index), review notes (schema or configuration changed, LLM-written, the proof
+covers the replayed requests only) and the related fixes. SQL appears with placeholders, never data values.
+
+On the demo (fixes of `FixIT`): 3 merge requests (`lazy-book-publisher`, `index-review-reviewer-name`, trap 1's
+LLM fix); trap 6's fix is redundant with trap 1's (same findings resolved); the LLM fixes of traps 3 and 5 are
+deferred: they change the same lines of `BookRepository` / `AuthorRepository` as trap 1's.
 
 ## Collector (phase 2)
 

@@ -83,6 +83,11 @@ fix-local: ## Generate fixes from target/analysis (templates, then Claude) and p
 	  --llm $(or $(LLM),claude) --llm-retries $(or $(RETRIES),2) $(if $(MODEL),--model $(MODEL)) \
 	  $(if $(EFFORT),--effort $(EFFORT)) $(if $(FINDING),--finding $(FINDING))
 
+.PHONY: mr-local
+mr-local: ## Merge requests of the proven fixes in target/fixes (phase 5, dry run: nothing pushed) -> target/mr
+	./mvnw -B -q -pl core,analyzer -am package -DskipTests
+	java -jar analyzer/target/flairquery-analyzer.jar mr --fixes target/fixes --bundles target/analysis
+
 .PHONY: openlibrary
 openlibrary: ## Stream Open Library dumps and cache a small subset (~/.cache/flairquery/openlibrary)
 	python3 -I corpus/openlibrary/fetch.py $(OL_ARGS)
