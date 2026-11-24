@@ -524,7 +524,7 @@ Validated on the demo (`ProverIT`, three hand-written patches for trap 2, profil
 | Patch | Verdict | Why |
 |---|---|---|
 | `Book.publisher` `fetch = LAZY` | ACCEPTED | `GET /books` 45 -> 1 statement, ~90 -> ~3 ms SQL per request; the useless EAGER also disappears from `/books/titles` (501 -> 1 statement) and `/authors/with-books` (326 -> 2); JSON identical everywhere |
-| DTO projection ordered by title | REJECTED | faster and the finding is gone, but `/books?limit=50` JSON differs at `/0/id` |
+| DTO projection in reverse id order | REJECTED | faster and the finding is gone, but `/books?limit=50` JSON differs at `/0/id` |
 | explicit `fetch = EAGER` | REJECTED | finding still reported, 45 -> 45 statements |
 
 ### Deterministic fixes (traps 2 and 4)
