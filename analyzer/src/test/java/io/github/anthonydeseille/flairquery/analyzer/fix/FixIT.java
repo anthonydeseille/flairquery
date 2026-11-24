@@ -1,7 +1,14 @@
 package io.github.anthonydeseille.flairquery.analyzer.fix;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.anthonydeseille.flairquery.analyzer.bundle.BundleBuilder;
+import io.github.anthonydeseille.flairquery.analyzer.mr.Description;
+import io.github.anthonydeseille.flairquery.analyzer.mr.FixEntry;
+import io.github.anthonydeseille.flairquery.analyzer.mr.FrozenTests;
+import io.github.anthonydeseille.flairquery.analyzer.mr.MrCommand;
+import io.github.anthonydeseille.flairquery.analyzer.mr.MrScorecard;
+import io.github.anthonydeseille.flairquery.analyzer.mr.TestProof;
 import io.github.anthonydeseille.flairquery.analyzer.prove.ProveCommand;
 import io.github.anthonydeseille.flairquery.analyzer.prove.Prover;
 import io.github.anthonydeseille.flairquery.analyzer.prove.Verdict;
@@ -11,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.StreamSupport;
@@ -22,10 +30,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  * collector responses, real demo sources) into patches (traps 2 and 4), the LLM fixes accepted by
  * {@link LlmFixIT} are replayed as frozen reference patches (traps 1, 3, 5, 6: no API call here), and the prover
  * proves all of them against one baseline on the real demo app (Testcontainers PostgreSQL seeded with corpus S,
- * agent attached). Every trap in scope must be FIXED, the witness CLEAN. When the demo changes and a reference
- * patch no longer applies or proves, regenerate it with {@code make llm-it} (copy the accepted patches of
- * {@code analyzer/target/llm-fixes-it} into {@code src/test/resources/fixes}). Needs Docker, python3 and the
- * agent jar.
+ * agent attached). Every trap in scope must be FIXED, the witness CLEAN.
+ * <p>
+ * Phase 5 on top of it: {@code mr} selects the merge requests of these proven fixes and proves the regression test
+ * of each one red on the current code and green with its fix (Maven on copies of the demo, its own Testcontainers
+ * setup); the tests are the frozen ones of {@link FrozenTests}. Its scorecard: traps 1, 2, 4 and 6 proposed in 3
+ * merge requests (trap 6's own fix redundant with trap 1's), traps 3 and 5 deferred (same lines as trap 1's).
+ * <p>
+ * When the demo changes and a reference patch or test no longer applies or proves, regenerate them with
+ * {@code make llm-it} (copy the accepted patches of {@code analyzer/target/llm-fixes-it} into
+ * {@code src/test/resources/fixes}, the tests of {@code LlmTestIT} into {@code src/test/resources/regression-tests}).
+ * Needs Docker, python3 and the agent jar.
  */
 class FixIT {
 
@@ -36,6 +51,9 @@ class FixIT {
     static List<FixCommand.Proposal> proposals;
     static List<Verdict> verdicts;
     static List<TrapScorecard.Row> scorecard;
+    static List<Description.MergeRequest> mrs;
+    static JsonNode mrIndex;
+    static List<MrScorecard.Row> mrScorecard;
 
     @BeforeAll
     static void generateAndProve() throws Exception {
@@ -56,6 +74,16 @@ class FixIT {
         scorecard = TrapScorecard.of(outcomes, new java.util.HashSet<>(bundles.stream().map(b -> b.path("id").asText()).toList()));
         System.out.print(TrapScorecard.text(scorecard));
         Files.writeString(OUT.resolve("scorecard.md"), TrapScorecard.markdown(scorecard));
+
+        // phase 5: merge requests of the proven fixes, each with its frozen regression test proven red / green
+        List<FixEntry> fixes = FixEntry.read(OUT.resolve("index.json"));
+        Map<String, JsonNode> byId = new HashMap<>();
+        bundles.forEach(b -> byId.put(b.path("id").asText(), b));
+        TestProof proof = new TestProof.Maven(REPO, "demo-app", REPO.resolve("analyzer/target/regression-tests-it"),
+                List.of(REPO.resolve("mvnw").toString()));
+        mrs = MrCommand.plan(fixes, byId, REPO, "demo-app", OUT.resolve("mr"), FrozenTests.generator(), proof, 0);
+        mrIndex = new ObjectMapper().readTree(OUT.resolve("mr/index.json").toFile());
+        mrScorecard = MrScorecard.of(fixes, mrIndex, byId);
     }
 
     /** The frozen LLM fix of a trap ({@code trap<n>-<name>.patch}), for the bundle of the trap's finding. */
@@ -147,5 +175,72 @@ class FixIT {
                         org.assertj.core.groups.Tuple.tuple(4, "index-migration"),
                         org.assertj.core.groups.Tuple.tuple(3, "llm"),
                         org.assertj.core.groups.Tuple.tuple(5, "llm"));
+    }
+
+    // ------------------------------------------------------------------------------------------------ phase 5
+
+    static MrScorecard.Row mrRow(int trap) {
+        return mrScorecard.stream().filter(r -> r.trap() != null && r.trap() == trap).findFirst().orElseThrow();
+    }
+
+    static String red(String fix) {
+        for (JsonNode e : mrIndex) {
+            if (e.path("fix").asText().equals(fix)) return e.path("red").asText();
+        }
+        throw new AssertionError("no merge request " + fix);
+    }
+
+    @Test
+    void threeMergeRequestsTemplatesFirst() {
+        assertThat(mrs).extracting(Description.MergeRequest::fix).containsExactly(
+                "lazy-book-publisher", "index-review-reviewer-name", "llm-trap1-authors-list-title-projection");
+    }
+
+    @Test
+    void trap2UselessEagerTestIsRedThenGreen() {
+        assertThat(red("lazy-book-publisher")).contains("Book.publisher");
+    }
+
+    @Test
+    void trap4MissingIndexTestIsRedThenGreen() {
+        assertThat(red("index-review-reviewer-name")).contains("reviewer_name");
+    }
+
+    @Test
+    void trap1NPlusOneTestIsRedThenGreen() {
+        assertThat(red("llm-trap1-authors-list-title-projection")).contains("N+1");
+    }
+
+    @Test
+    void scorecardTrapsProposedAsMergeRequests() {
+        for (int trap : List.of(1, 2, 4, 6)) {
+            assertThat(mrRow(trap)).as("trap " + trap).satisfies(r -> {
+                assertThat(r.status()).isEqualTo(MrScorecard.Status.PROPOSED);
+                assertThat(r.testProven()).as(r.test()).isTrue();
+            });
+        }
+        assertThat(mrRow(6).fix()).isEqualTo("llm-trap1-authors-list-title-projection");
+        assertThat(mrRow(6).detail()).contains("llm-trap6-authors-list-dto-projection-no-open-in-view REDUNDANT");
+        for (int trap : List.of(3, 5)) {
+            assertThat(mrRow(trap)).as("trap " + trap).satisfies(r -> {
+                assertThat(r.status()).isEqualTo(MrScorecard.Status.DEFERRED);
+                assertThat(r.detail()).contains("llm-trap1-authors-list-title-projection");
+            });
+        }
+        assertThat(mrRow(7).status()).isEqualTo(MrScorecard.Status.OUT_OF_SCOPE);
+        assertThat(mrScorecard.get(mrScorecard.size() - 1).status()).isEqualTo(MrScorecard.Status.CLEAN);
+        assertThat(MrScorecard.summary(mrScorecard)).isEqualTo("4/6 traps proposed as merge requests "
+                + "(3 merge requests, 3 with a regression test proven red then green), 2 deferred");
+    }
+
+    @Test
+    void theMergeRequestsAndTheScorecardAreWritten() throws Exception {
+        for (Description.MergeRequest mr : mrs) {
+            Path patch = OUT.resolve("mr/" + mr.fix() + "/" + mr.fix() + ".patch");
+            assertThat(Files.readString(patch)).contains("RegressionTest.java");
+        }
+        assertThat(Files.readString(OUT.resolve("mr/scorecard.md"))).contains("phase 5 scorecard");
+        Process git = new ProcessBuilder("git", "status", "--porcelain", "demo-app/src", "demo-app/pom.xml").directory(REPO.toFile()).start();
+        assertThat(new String(git.getInputStream().readAllBytes())).isEmpty();
     }
 }

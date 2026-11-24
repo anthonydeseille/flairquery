@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.anthonydeseille.flairquery.analyzer.fix.FixCommand;
+import io.github.anthonydeseille.flairquery.analyzer.fix.TrapScorecard;
 import io.github.anthonydeseille.flairquery.analyzer.llm.ClaudeClient;
 import io.github.anthonydeseille.flairquery.analyzer.prove.RequestSpec;
 
@@ -14,14 +15,17 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Stream;
 
 /**
  * {@code mr}: the merge requests of the proven fixes ({@code fix}'s output). Selects them ({@link Selection}),
  * writes for each its branch, title, description and patch under {@code --out}, and an {@code index.json} of
- * every decision (selected, redundant, deferred, not proven).
+ * every decision (selected, redundant, deferred, not proven); on the demo app, the phase 5 trap scorecard
+ * ({@link MrScorecard}, {@code scorecard.md}).
  */
 public final class MrCommand {
 
@@ -122,6 +126,13 @@ public final class MrCommand {
         }
         Files.createDirectories(out);
         JSON.writeValue(out.resolve("index.json").toFile(), all);
+        Set<String> analyzed = new HashSet<>();
+        fixes.forEach(f -> analyzed.addAll(f.findings()));
+        if (TrapScorecard.isDemo(analyzed)) {
+            List<MrScorecard.Row> rows = MrScorecard.of(fixes, all, bundles);
+            System.out.print(MrScorecard.text(rows));
+            Files.writeString(out.resolve("scorecard.md"), MrScorecard.markdown(rows));
+        }
         return mrs;
     }
 

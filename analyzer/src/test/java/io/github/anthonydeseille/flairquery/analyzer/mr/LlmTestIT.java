@@ -24,11 +24,11 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * proofs of the fixes are not replayed: a minimal report (finding, target endpoint before / after, as measured by
  * {@code FixIT}) stands for them. Opt-in ({@code make llm-it}), skipped without {@code ANTHROPIC_API_KEY}. The
  * proven tests are written to {@code analyzer/target/llm-tests-it}: copy them to
- * {@code src/test/resources/regression-tests/<fix>--<Class>.java} to refresh the references of {@link RegressionTestIT}.
+ * {@code src/test/resources/regression-tests/<fix>--<Class>.java} to refresh the references of {@link FrozenTests} (proven again by {@code FixIT}).
  */
 class LlmTestIT {
 
-    static final Path REPO = RegressionTestIT.REPO;
+    static final Path REPO = FrozenTests.REPO;
     static final Path OUT = REPO.resolve("analyzer/target/llm-tests-it");
     static final ObjectMapper JSON = new ObjectMapper();
     static final Map<String, RegressionTests.Outcome> outcomes = new LinkedHashMap<>();
@@ -45,7 +45,7 @@ class LlmTestIT {
             patches.put(p.fix().name(), p.patch());
         }
         patches.put("llm-trap1-authors-list-title-projection",
-                Files.readString(RegressionTestIT.FIXES.resolve("trap1-authors-list-title-projection.patch")));
+                Files.readString(FrozenTests.FIXES.resolve("trap1-authors-list-title-projection.patch")));
 
         LlmTestGenerator generator = new LlmTestGenerator(new ClaudeClient(null, "high", 64_000),
                 FixCommand.describe(RequestSpec.read(REPO.resolve("analyzer/requests-demo.txt"))), 20, System.out::println);

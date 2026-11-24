@@ -68,7 +68,9 @@ ones deferred and proven again after the merge; descriptions from the proof; dry
 test per MR, written by the LLM, proven red on the current code and green with the fix by Maven) and step 3
 (`publish`: branch + pull request on GitHub, idempotent, closed requests never reopened; GitLab later) done.
 Step 4 (public sandbox repository for the demo's pull requests, `make sandbox-init` / `make sandbox-publish`)
-prepared. Next: scorecard.
+prepared. Step 5 (trap scorecard "proposed as a merge request": traps 1, 2, 4 and 6 in 3 merge requests, each with
+its regression test proven red then green; traps 3 and 5 deferred (same lines as trap 1's fix), trap 7 out of
+scope, witness clean; asserted by `FixIT` from the frozen fixes and tests) done: release 0.5.0.
 - Opened through the GitLab/GitHub API, one MR per fix
 - Description: problem, proof (before/after), plan, added tests
 - No automatic merge or deployment: human review is mandatory

@@ -21,7 +21,7 @@ public final class TrapScorecard {
     public enum Status { FIXED, NOT_FIXED, NOT_GENERATED, NOT_ANALYZED, OUT_OF_SCOPE, CLEAN, FLAGGED }
 
     static final String DEMO = "io.github.anthonydeseille.flairquery.demo.domain.";
-    static final String WITNESS = "GET /publishers/{id}";
+    public static final String WITNESS = "GET /publishers/{id}";
 
     /** A trap and the finding a fix must resolve (null: out of scope). */
     public record Trap(int number, String title, String finding) { }

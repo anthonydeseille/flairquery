@@ -87,7 +87,7 @@ operator: see [docs/ROADMAP.md](docs/ROADMAP.md).
 flairquery/
 ├── core/           flairquery-core: shared fq: tag format/parser and SQL normalizer (no dependency)
 ├── collector/      flairquery-collector: phase 2 PostgreSQL collector
-├── analyzer/       flairquery-analyzer: phase 4 fixes (templates + LLM), proven before being proposed, trap scorecard
+├── analyzer/       flairquery-analyzer: phase 4 fixes (templates + LLM) proven before being proposed, phase 5 merge requests (regression tests, GitHub), trap scorecards
 ├── agent/          flairquery-agent: Java 21 agent (relocated ByteBuddy, dependency-free shaded jar)
 ├── demo-app/       flairquery-demo-app: target Spring Boot app, traps documented in TRAPS.md
 ├── it/             flairquery-it: integration tests (Testcontainers + real agent)
@@ -674,8 +674,8 @@ make mr-local LLM=off    # merge requests without tests, no API call
 On the demo, the three tests were proven at the first attempt (~10k output tokens): trap 2 `GET /authors/with-books`
 "should run at most 2 SQL statements, but ran 6"; trap 4 plan `Seq Scan on review ... Filter: reviewer_name` instead
 of an `Index Cond`; trap 1 "GET /authors with 4 authors ran 5 SQL statements: expected at most 2". They are frozen in
-`analyzer/src/test/resources/regression-tests` and `RegressionTestIT` (`make verify`, no API call, ~2 min) proves them
-red / green again; `make llm-it` (`LlmTestIT`) asks Claude for new ones.
+`analyzer/src/test/resources/regression-tests` and `FixIT` (`make verify`, no API call) proves them red / green
+again; `make llm-it` (`LlmTestIT`) asks Claude for new ones.
 
 ### Publishing on GitHub
 
@@ -716,6 +716,28 @@ make fix-local && make mr-local && make sandbox-publish   # fixes, merge request
 `sandbox-init` adds a commit to `main` only when `demo-app/` changed; `sandbox-publish` uses the GitHub CLI's token
 (`gh auth token`) unless `GITHUB_TOKEN` is set. Checked locally: the assembled sandbox builds and passes its tests
 standalone (`mvnw verify`), and the three demo merge requests (fix + regression test) apply on it.
+
+### Trap scorecard: proposed as merge requests
+
+On the demo app, `mr` ends with the phase 5 scorecard (also in `target/mr/scorecard.md`): a trap is PROPOSED
+when a selected merge request resolves its finding (its own fix, or another one resolving it too), DEFERRED when
+only a deferred fix does. `FixIT` (`make verify`, no API call) runs `mr` on the fixes it has just proven, with the
+frozen regression tests proven red / green again by Maven, and asserts (names shortened):
+
+```
+trap scorecard (phase 5): 4/6 traps proposed as merge requests (3 merge requests, 3 with a regression test proven red then green), 2 deferred
+  1  PROPOSED      N+1 authors -> books                   flairquery/llm-trap1-... (its own fix) test red -> green (AuthorsListQueriesRegressionTest): [GET /authors with 4 authors ran 5 SQL statements: expected at most 2 ...
+  2  PROPOSED      @ManyToOne EAGER publisher             flairquery/lazy-book-publisher (its own fix) test red -> green (BookPublisherLazyRegressionTest): [GET /authors/with-books should run at most 2 SQL statements (JOIN FETCH query + count), but ran 6 ...
+  3  DEFERRED      Over-fetching (book description)       llm-trap3-...: changes the same lines as llm-trap1-... (BookRepository.java)
+  4  PROPOSED      Missing index on review.reviewer_name  flairquery/index-review-reviewer-name (its own fix) test red -> green (ReviewSearchReviewerIndexRegressionTest): [Missing index on review.reviewer_name ...
+  5  DEFERRED      JOIN FETCH + pagination                llm-trap5-...: changes the same lines as llm-trap1-... (AuthorRepository.java, BookRepository.java, AuthorService.java, AuthorController.java)
+  6  PROPOSED      open-in-view                           flairquery/llm-trap1-... (resolved by this merge request too; its own fix llm-trap6-... REDUNDANT) test red -> green (AuthorsListQueriesRegressionTest)
+  7  OUT_OF_SCOPE  Sort spilling to disk                  keyset pagination changes the API; work_mem is phase 6
+  W  CLEAN         Witness GET /publishers/{id}           no merge request targets it
+```
+
+Traps 3 and 5 are not lost: their fixes were proven on the current code but change the same lines as trap 1's,
+so they are generated and proven again once that merge request is merged, never rebased blindly.
 
 ## Collector (phase 2)
 
