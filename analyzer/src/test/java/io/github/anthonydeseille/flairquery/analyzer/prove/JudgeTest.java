@@ -196,9 +196,15 @@ class JudgeTest {
         // a migration can change the plan of the same SQL: then it counts
         assertThat(Judge.judge(TARGET, before, after, Judge.Thresholds.DEFAULT, true).reasons())
                 .containsExactly("regression on GET /reviews/ranking: 107.000 ms SQL per request instead of 75.000");
+        // ... unless every statement of the endpoint kept its plan (EXPLAIN on both databases)
+        Verdict samePlan = Judge.judge(TARGET, before, after, Judge.Thresholds.DEFAULT, true, java.util.Set.of("GET /reviews/ranking"));
+        assertThat(samePlan.status()).isEqualTo(Verdict.Status.ACCEPTED);
+        assertThat(samePlan.report().path("endpoints").toString()).contains("the same SQL with the same plans: measurement noise");
         // other SQL: it counts
         assertThat(Judge.judge(TARGET, before, withRanking(after, 107.0, sql + " for update"), Judge.Thresholds.DEFAULT, false)
                 .accepted()).isFalse();
+        assertThat(Judge.judge(TARGET, before, withRanking(after, 107.0, sql + " for update"), Judge.Thresholds.DEFAULT, true,
+                java.util.Set.of("GET /reviews/ranking")).accepted()).isFalse();
     }
 
     @Test

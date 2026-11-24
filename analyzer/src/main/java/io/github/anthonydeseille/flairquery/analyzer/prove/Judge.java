@@ -28,7 +28,8 @@ import java.util.TreeSet;
  *       ({@link Thresholds#timeNoise} + {@link Thresholds#timeNoiseMs}). An endpoint that runs exactly the same
  *       SQL (same statements, same count per request) while the patch changes no migration cannot be slowed
  *       down by the patch at the SQL level: its time difference is measurement noise, reported but not held
- *       against the fix (a deep sort spilling to disk varies by +-40 % between runs on a laptop).</li>
+ *       against the fix (a deep sort spilling to disk varies by +-40 % between runs on a laptop). When the patch
+ *       does change the schema, the same holds for an endpoint whose statements all keep the same plan.</li>
  * </ol>
  * Pure logic: no I/O, unit-tested on synthetic measurements. Reports name JSON paths, never data values.
  */
@@ -56,6 +57,15 @@ public final class Judge {
     /** @param schemaChanged the patch touches a database migration: identical SQL may get another plan */
     public static Verdict judge(String findingId, Measurement before, Measurement after, Thresholds t,
                                 boolean schemaChanged) {
+        return judge(findingId, before, after, t, schemaChanged, Set.of());
+    }
+
+    /**
+     * @param schemaChanged the patch touches a database migration: identical SQL may get another plan
+     * @param samePlans     endpoints whose statements all have the same plan with and without the patch
+     */
+    public static Verdict judge(String findingId, Measurement before, Measurement after, Thresholds t,
+                                boolean schemaChanged, Set<String> samePlans) {
         ObjectNode report = JSON.createObjectNode();
         report.put("finding", findingId);
         ArrayNode checks = report.putArray("checks");
@@ -75,7 +85,7 @@ public final class Judge {
 
         responses(before, after, checks, reasons);
         findings(findingId, before, after, report, checks, reasons);
-        costs(target, before, after, t, schemaChanged, report, checks, reasons);
+        costs(target, before, after, t, schemaChanged, samePlans, report, checks, reasons);
 
         Verdict.Status status = reasons.isEmpty() ? Verdict.Status.ACCEPTED : Verdict.Status.REJECTED;
         report.put("status", status.name());
@@ -127,7 +137,8 @@ public final class Judge {
     }
 
     private static void costs(String target, Measurement before, Measurement after, Thresholds t,
-                              boolean schemaChanged, ObjectNode report, ArrayNode checks, List<String> reasons) {
+                              boolean schemaChanged, Set<String> samePlans, ObjectNode report, ArrayNode checks,
+                              List<String> reasons) {
         report.put("schemaChanged", schemaChanged);
         ArrayNode table = report.putArray("endpoints");
         List<String> regressions = new ArrayList<>();
@@ -151,6 +162,8 @@ public final class Judge {
                         endpoint, a.statementsPerRequest(), b.statementsPerRequest()));
             } else if (slower && sameSql && !schemaChanged) {
                 row.put("note", "slower, but the same SQL on the same schema: measurement noise");
+            } else if (slower && sameSql && samePlans.contains(endpoint)) {
+                row.put("note", "slower, but the same SQL with the same plans: measurement noise");
             } else if (slower) {
                 regressions.add(String.format(java.util.Locale.ROOT, "%s: %.3f ms SQL per request instead of %.3f",
                         endpoint, a.sqlMsPerRequest(), b.sqlMsPerRequest()));

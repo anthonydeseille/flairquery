@@ -512,7 +512,12 @@ make prove-local FINDING=useless-eager-24294e29 PATCH=/tmp/fix.patch  # needs Do
    JSON path, never the values); the finding is **gone**; **no new finding**; its endpoint runs **fewer
    statements and less SQL time** (or, same statements, at least 20 % less SQL time: an index); no other
    endpoint runs more statements or noticeably more SQL time. An endpoint running exactly the same SQL while
-   no migration changed cannot be slowed down by the patch: its time difference is reported as noise.
+   no migration changed cannot be slowed down by the patch: its time difference is reported as noise; when a
+   migration changed, the same holds only if every one of its statements keeps the same plan
+   (`EXPLAIN (GENERIC_PLAN)` on both databases).
+5. A database-side finding the agent cannot see (`MISSING_INDEX`) is reproduced from the plan of its
+   statement on each database (`--bundles` gives its evidence): it is gone when the column is no longer a
+   scan `Filter`; a statement that cannot be explained keeps the finding. Plans before / after are reported.
 
 Validated on the demo (`ProverIT`, three hand-written patches for trap 2, profile S):
 
@@ -522,8 +527,30 @@ Validated on the demo (`ProverIT`, three hand-written patches for trap 2, profil
 | DTO projection ordered by title | REJECTED | faster and the finding is gone, but `/books?limit=50` JSON differs at `/0/id` |
 | explicit `fetch = EAGER` | REJECTED | finding still reported, 45 -> 45 statements |
 
-Next steps: deterministic fixes (traps 2 and 4) generated and proven, then LLM-generated fixes (traps 1,
-3, 5, 6), never proposed without that proof.
+### Deterministic fixes (traps 2 and 4)
+
+`fix` reads the bundles, generates a patch for every finding a template handles, merges identical patches
+(the same cause seen on several endpoints is one fix) and proves them all against one baseline. Only an
+ACCEPTED fix is proposed (`"proposed": true` in `target/fixes/index.json`, report in `target/fixes/proofs/`).
+
+```bash
+make analyze-local     # bundles -> target/analysis
+make fix-local         # needs Docker -> target/fixes/<name>.patch + index.json
+```
+
+| Finding | Generator | Change |
+|---|---|---|
+| `USELESS_EAGER` | `lazy-association` | `@ManyToOne` / `@OneToOne` on the field -> `fetch = FetchType.LAZY` (arguments kept, `FetchType` import added if needed) |
+| `MISSING_INDEX` | `index-migration` | new Liquibase changeset `CREATE INDEX CONCURRENTLY IF NOT EXISTS` (`runInTransaction:false`, with rollback), included at the end of the master changelog (YAML or XML); Flyway not handled yet |
+
+Validated on the demo (`FixIT`, bundles from recorded agent + collector responses, profile S):
+
+| Fix | Verdict | Proof |
+|---|---|---|
+| `lazy-book-publisher` (4 findings) | ACCEPTED | `/books` 45 -> 1 statement, `/books/titles` 501 -> 1, `/authors/with-books` 326 -> 2; JSON identical. Not accepted *for* the `GET /authors` finding alone (publishers were joined there: 22 -> 22 statements), but resolved there too |
+| `index-review-reviewer-name` | ACCEPTED | plan `Index Scan using review_pkey` + `Filter reviewer_name` -> `Bitmap Index Scan using idx_review_reviewer_name`; `/reviews/search` ~14.7 -> ~2.6 ms SQL per request, same statement |
+
+Next step: LLM-generated fixes (traps 1, 3, 5, 6), never proposed without that proof.
 
 ## Collector (phase 2)
 

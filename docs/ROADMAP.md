@@ -44,9 +44,10 @@ witness clean. Inputs for phase 4: each finding's evidence (association, caller,
 statements), the plans and the column selectivity from phase 2.
 
 ## Phase 4 — LLM analyzer
-Status: step 1 (evidence bundles) and step 2 (the prover: identical JSON, finding gone, no new finding,
-fewer statements and less SQL time, on a Testcontainers copy) done; next, deterministic fixes for traps 2
-and 4, then LLM-generated fixes.
+Status: step 1 (evidence bundles), step 2 (the prover: identical JSON, finding gone, no new finding,
+fewer statements and less SQL time, on a Testcontainers copy) and step 3 (deterministic fixes for traps 2
+and 4, generated from the bundles and proven: `fetch = LAZY`, Liquibase `CREATE INDEX CONCURRENTLY`
+changeset checked on its plan) done; next, LLM-generated fixes (traps 1, 3, 5, 6).
 - Inputs: source code (entity, repository, service), plan, schema, endpoint profile
 - Proposals: LAZY + `@EntityGraph` / `JOIN FETCH` per use case, DTO projections,
   `@BatchSize` / `default_batch_fetch_size`, `@Query` rewrites, indexes (Liquibase changeset,
@@ -55,7 +56,8 @@ and 4, then LLM-generated fixes.
 - Mandatory automatic validation before any proposal:
   - strictly identical JSON snapshot of the response
   - fewer statements and less SQL time (integration test)
-  - indexes validated with HypoPG; SQL rewrites validated by a shadow run on a replica (result hashes)
+  - indexes validated on a real index (Testcontainers) with the plan before / after; HypoPG later, for
+    production; SQL rewrites validated by a shadow run on a replica (result hashes)
 
 ## Phase 5 — Merge requests
 - Opened through the GitLab/GitHub API, one MR per fix

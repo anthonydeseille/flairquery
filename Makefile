@@ -70,6 +70,12 @@ prove-local: ## Prove patches for one finding (FINDING=<id> PATCH=a.patch[,b.pat
 	./mvnw -B -q -pl core,agent,analyzer -am package -DskipTests
 	java -jar analyzer/target/flairquery-analyzer.jar prove --finding $(FINDING) --patch $(PATCH) --rounds $(or $(ROUNDS),5)
 
+.PHONY: fix-local
+fix-local: ## Generate the deterministic fixes from target/analysis and prove them ([FINDING=id,id] [ROUNDS=5]); needs Docker -> target/fixes
+	./mvnw -B -q -pl core,agent,analyzer -am package -DskipTests
+	java -jar analyzer/target/flairquery-analyzer.jar fix --bundles target/analysis --rounds $(or $(ROUNDS),5) \
+	  $(if $(FINDING),--finding $(FINDING))
+
 .PHONY: openlibrary
 openlibrary: ## Stream Open Library dumps and cache a small subset (~/.cache/flairquery/openlibrary)
 	python3 -I corpus/openlibrary/fetch.py $(OL_ARGS)

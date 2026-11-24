@@ -1,5 +1,6 @@
 package io.github.anthonydeseille.flairquery.analyzer.prove;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -19,7 +20,10 @@ import java.util.Map;
  *         [--agent-jar agent/target/flairquery-agent.jar] [--base-packages PKG] [--seed corpus:S|none]
  *         [--corpus corpus] [--rounds 5] [--jar target/&lt;app&gt;.jar] [--build "mvnw -B -q package -DskipTests"]
  *         [--ready /actuator/health] [--image postgres:16] [--work target/prover] [--out target/proofs] [--keep true]
+ *         [--bundles target/analysis]
  * </pre>
+ * A database-side finding ({@code MISSING_INDEX}) is reproduced from the plan of its statement, read from its
+ * evidence bundle in {@code --bundles}.
  * Defaults fit this repository's demo application. Exit code 0 when every patch is accepted, 1 otherwise.
  */
 public final class ProveCommand {
@@ -28,7 +32,7 @@ public final class ProveCommand {
             usage: prove --finding ID --patch FILE[,FILE...] [--repo .] [--app demo-app] [--requests FILE]
                          [--agent-jar PATH] [--base-packages PKG] [--seed corpus:S|none] [--corpus DIR] [--rounds 5]
                          [--jar target/APP.jar] [--build CMD] [--ready PATH] [--image postgres:16]
-                         [--work target/prover] [--out target/proofs] [--keep false]""";
+                         [--work target/prover] [--out target/proofs] [--keep false] [--bundles target/analysis]""";
 
     private ProveCommand() { }
 
@@ -37,24 +41,40 @@ public final class ProveCommand {
             System.err.println(USAGE);
             return 2;
         }
-        Path repo = Path.of(opt.getOrDefault("repo", ".")).toAbsolutePath().normalize();
-        String app = opt.getOrDefault("app", "demo-app");
-        Path appDir = repo.resolve(app);
+        Path repo = repo(opt);
         List<Path> patches = Arrays.stream(opt.get("patch").split(",")).map(String::strip)
                 .map(p -> Path.of(p).toAbsolutePath().normalize()).toList();
+        Prover.Config config = config(opt);
+        if (config == null) return 2;
+        String finding = opt.get("finding");
+        List<JsonNode> database = databaseBundle(finding, Path.of(opt.getOrDefault("bundles",
+                repo.resolve("target/analysis").toString())));
+        List<Verdict> verdicts = new Prover(config, m -> System.out.println("[prove] " + m)).prove(
+                patches.stream().map(p -> new Prover.Candidate(List.of(finding), p)).toList(), database);
+        write(finding, patches, verdicts, Path.of(opt.getOrDefault("out", repo.resolve("target/proofs").toString())));
+        return verdicts.stream().allMatch(Verdict::accepted) ? 0 : 1;
+    }
+
+    public static Path repo(Map<String, String> opt) {
+        return Path.of(opt.getOrDefault("repo", ".")).toAbsolutePath().normalize();
+    }
+
+    /** The prover's configuration from the command-line options (shared with {@code fix}); null when unusable. */
+    public static Prover.Config config(Map<String, String> opt) throws Exception {
+        Path repo = repo(opt);
+        String app = opt.getOrDefault("app", "demo-app");
+        Path appDir = repo.resolve(app);
         Path requests = Path.of(opt.getOrDefault("requests", repo.resolve("analyzer/requests-demo.txt").toString()));
         Path agentJar = Path.of(opt.getOrDefault("agent-jar", repo.resolve("agent/target/flairquery-agent.jar").toString()));
         if (!Files.isRegularFile(agentJar)) {
             System.err.println("agent jar not found: " + agentJar + " (make jars, or --agent-jar)");
-            return 2;
+            return null;
         }
         String jar = opt.getOrDefault("jar", "target/" + defaultJarName(appDir));
         List<String> build = opt.containsKey("build") ? List.of(opt.get("build").split("\\s+"))
                 : List.of(repo.resolve("mvnw").toString(), "-B", "-q", "package", "-DskipTests");
         Path work = Path.of(opt.getOrDefault("work", repo.resolve("target/prover").toString())).toAbsolutePath();
-        Path out = Path.of(opt.getOrDefault("out", repo.resolve("target/proofs").toString()));
-
-        Prover.Config config = new Prover.Config(
+        return new Prover.Config(
                 new Workspace.Config(repo, app, work, build, jar),
                 new AppRun.Options(agentJar, opt.getOrDefault("base-packages", "io.github.anthonydeseille.flairquery.demo"),
                         opt.getOrDefault("ready", "/actuator/health"), Duration.ofMinutes(3)),
@@ -65,11 +85,14 @@ public final class ProveCommand {
                 work.resolve("logs"),
                 Judge.Thresholds.DEFAULT,
                 Boolean.parseBoolean(opt.getOrDefault("keep", "false")));
+    }
 
-        String finding = opt.get("finding");
-        List<Verdict> verdicts = new Prover(config, m -> System.out.println("[prove] " + m)).prove(finding, patches);
-        write(finding, patches, verdicts, out);
-        return verdicts.stream().allMatch(Verdict::accepted) ? 0 : 1;
+    /** The bundle of a database-side finding ({@code <bundles>/<id>.json}), which the prover reproduces from plans. */
+    static List<JsonNode> databaseBundle(String finding, Path bundles) throws Exception {
+        Path file = bundles.resolve(finding + ".json");
+        if (!Files.isRegularFile(file)) return List.of();
+        JsonNode b = new ObjectMapper().readTree(file.toFile());
+        return b.path("origin").asText().equals("collector") ? List.of(b) : List.of();
     }
 
     static void write(String finding, List<Path> patches, List<Verdict> verdicts, Path out) throws Exception {

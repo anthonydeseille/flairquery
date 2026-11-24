@@ -2,6 +2,7 @@ package io.github.anthonydeseille.flairquery.analyzer.prove;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.anthonydeseille.flairquery.analyzer.bundle.BundleBuilder;
 
@@ -13,6 +14,9 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.function.Consumer;
 
 /**
@@ -26,6 +30,10 @@ import java.util.function.Consumer;
  *       cost of an endpoint is the median of its rounds;</li>
  *   <li>{@link Judge judges} each candidate against the baseline.</li>
  * </ol>
+ * Database-side findings the agent cannot see ({@code MISSING_INDEX}) are reproduced on each run's database from
+ * the plan of their statement ({@code EXPLAIN (GENERIC_PLAN)}), and their plans before / after are reported. When
+ * a patch changes the schema, an endpoint running the same SQL whose plans did not change is not held
+ * responsible for a slower measurement.
  */
 public final class Prover {
 
@@ -39,7 +47,7 @@ public final class Prover {
      * @param logs      application logs
      * @param keep      keep the copies (and their builds) after the run
      */
-    record Config(Workspace.Config workspace, AppRun.Options app, List<RequestSpec> requests, Seeder seed,
+    public record Config(Workspace.Config workspace, AppRun.Options app, List<RequestSpec> requests, Seeder seed,
                          int rounds, String image, Path logs, Judge.Thresholds thresholds, boolean keep) { }
 
     static final ObjectMapper JSON = new ObjectMapper();
@@ -52,8 +60,34 @@ public final class Prover {
         this.log = log;
     }
 
+    /**
+     * A patch and the findings it is meant to fix (several when the same change fixes the same cause seen on
+     * several endpoints: {@code Book.publisher} EAGER on {@code GET /books} and {@code GET /authors}).
+     */
+    public record Candidate(List<String> findings, Path patch) {
+        public Candidate {
+            if (findings.isEmpty()) throw new IllegalArgumentException("a candidate fixes at least one finding");
+            findings = List.copyOf(findings);
+        }
+    }
+
     /** @return one verdict per patch, in order */
     public List<Verdict> prove(String findingId, List<Path> patches) throws Exception {
+        return prove(patches.stream().map(p -> new Candidate(List.of(findingId), p)).toList(), List.of());
+    }
+
+    /**
+     * @param candidates       patches to prove, each against the same baseline
+     * @param databaseFindings bundles of the database-side findings involved ({@code MISSING_INDEX}): the agent
+     *                         does not see them, they are reproduced from the plan of their statement
+     * @return one verdict per candidate, in order. With several findings, the verdict of the first one the patch
+     *         is accepted for (else the first rejection), every per-finding outcome listed in its report
+     */
+    public List<Verdict> prove(List<Candidate> candidates, List<JsonNode> databaseFindings) throws Exception {
+        List<Plans.MissingIndex> probes = new ArrayList<>();
+        for (JsonNode b : databaseFindings) {
+            if (b.path("kind").asText().equals("MISSING_INDEX")) probes.add(Plans.MissingIndex.of(b));
+        }
         Workspace ws = new Workspace(config.workspace());
         try {
             log.accept("building the baseline");
@@ -65,12 +99,13 @@ public final class Prover {
             }
             Map<Integer, Path> jars = new LinkedHashMap<>();
             Map<Integer, Verdict> verdicts = new HashMap<>();
-            for (int i = 0; i < patches.size(); i++) {
-                log.accept("applying and building " + patches.get(i));
+            for (int i = 0; i < candidates.size(); i++) {
+                Path patch = candidates.get(i).patch();
+                log.accept("applying and building " + patch);
                 try {
-                    jars.put(i, ws.prepare("candidate-" + (i + 1), patches.get(i)));
+                    jars.put(i, ws.prepare("candidate-" + (i + 1), patch));
                 } catch (Workspace.Failure f) {
-                    verdicts.put(i, failed(findingId, patches.get(i), "patch " + f.getMessage()));
+                    verdicts.put(i, failed(candidates.get(i).findings().get(0), patch, "patch " + f.getMessage()));
                 }
             }
 
@@ -84,36 +119,44 @@ public final class Prover {
                 db.analyzeTemplate();
 
                 log.accept("starting the baseline");
-                try (Run baseline = open("baseline", baseJar, db)) {
-                    if (!baseline.findings().containsKey(findingId)) {
-                        log.accept("finding " + findingId + " not reported without the fix; reported: "
-                                + baseline.findings().keySet());
+                try (Run baseline = open("baseline", baseJar, db, probes)) {
+                    Map<String, JsonNode> reported = baseline.findings();
+                    for (Candidate c : candidates) {
+                        for (String id : c.findings()) {
+                            if (!reported.containsKey(id)) {
+                                log.accept("finding " + id + " not reported without the fix; reported: " + reported.keySet());
+                            }
+                        }
                     }
                     for (Map.Entry<Integer, Path> e : jars.entrySet()) {
-                        Path patch = patches.get(e.getKey());
+                        Candidate cand = candidates.get(e.getKey());
                         String name = "candidate-" + (e.getKey() + 1);
-                        log.accept("measuring " + name + " (" + patch.getFileName() + ") against the baseline, "
+                        log.accept("measuring " + name + " (" + cand.patch().getFileName() + ") against the baseline, "
                                 + config.rounds() + " alternated rounds");
                         Verdict v;
-                        try (Run candidate = open(name, e.getValue(), db)) {
+                        try (Run candidate = open(name, e.getValue(), db, probes)) {
                             int from = baseline.snapshots.size() - 1;
                             for (int round = 0; round < config.rounds(); round++) {
                                 baseline.round();
                                 candidate.round();
                             }
-                            v = Judge.judge(findingId, baseline.measurement(from), candidate.measurement(0),
-                                    config.thresholds(), ws.changesSchema(name));
+                            Measurement before = baseline.measurement(from);
+                            Measurement after = candidate.measurement(0);
+                            boolean schemaChanged = ws.changesSchema(name);
+                            Set<String> samePlans = schemaChanged ? samePlans(before, after, baseline, candidate) : Set.of();
+                            v = judge(cand, before, after, schemaChanged, samePlans);
+                            plans(v.report(), probes, cand, baseline, candidate);
                         } catch (IllegalStateException ex) {
-                            v = failed(findingId, patch, "the application " + ex.getMessage());
+                            v = failed(cand.findings().get(0), cand.patch(), "the application " + ex.getMessage());
                         }
                         verdicts.put(e.getKey(), v);
                     }
                 }
             }
             List<Verdict> out = new ArrayList<>();
-            for (int i = 0; i < patches.size(); i++) {
+            for (int i = 0; i < candidates.size(); i++) {
                 Verdict v = verdicts.get(i);
-                v.report().put("patch", patches.get(i).toString());
+                v.report().put("patch", candidates.get(i).patch().toString());
                 v.report().put("rounds", config.rounds());
                 out.add(v);
             }
@@ -123,13 +166,78 @@ public final class Prover {
         }
     }
 
+    /** Judges the patch for each of its findings; keeps the first acceptance, else the first rejection. */
+    private Verdict judge(Candidate c, Measurement before, Measurement after, boolean schemaChanged,
+                          Set<String> samePlans) {
+        List<Verdict> each = new ArrayList<>();
+        for (String id : c.findings()) {
+            each.add(Judge.judge(id, before, after, config.thresholds(), schemaChanged, samePlans));
+        }
+        Verdict chosen = each.stream().filter(Verdict::accepted).findFirst()
+                .or(() -> each.stream().filter(v -> v.status() == Verdict.Status.REJECTED).findFirst())
+                .orElse(each.get(0));
+        if (c.findings().size() > 1) {
+            ArrayNode all = chosen.report().putArray("findings");
+            for (int i = 0; i < each.size(); i++) {
+                ObjectNode f = all.addObject();
+                f.put("id", c.findings().get(i));
+                f.put("status", each.get(i).status().name());
+                f.set("reasons", JSON.valueToTree(each.get(i).reasons()));
+            }
+        }
+        return chosen;
+    }
+
+    /**
+     * Endpoints that run the same SQL with and without the patch and whose every statement keeps the same
+     * plan shape: their time difference cannot come from the patch.
+     */
+    static Set<String> samePlans(Measurement before, Measurement after, Run baseline, Run candidate) throws Exception {
+        Set<String> out = new TreeSet<>();
+        try (Connection b = baseline.db.connectForPlans(baseline.database);
+             Connection a = candidate.db.connectForPlans(candidate.database)) {
+            for (Map.Entry<String, Measurement.EndpointCost> e : before.endpoints().entrySet()) {
+                Measurement.EndpointCost x = e.getValue();
+                Measurement.EndpointCost y = after.endpoints().get(e.getKey());
+                if (y == null || x.statements().isEmpty() || !x.statements().equals(y.statements())) continue;
+                boolean same = true;
+                for (String st : x.statements()) {
+                    String sql = st.substring(st.indexOf(" x ") + 3);
+                    Optional<String> p1 = Plans.explain(b, sql).map(Plans::shape);
+                    Optional<String> p2 = Plans.explain(a, sql).map(Plans::shape);
+                    if (p1.isEmpty() || !p1.equals(p2)) {
+                        same = false;
+                        break;
+                    }
+                }
+                if (same) out.add(e.getKey());
+            }
+        }
+        return out;
+    }
+
+    /** Plan of each database finding's statement, before and after the patch, in the report. */
+    private static void plans(ObjectNode report, List<Plans.MissingIndex> probes, Candidate c, Run baseline,
+                              Run candidate) throws Exception {
+        List<Plans.MissingIndex> mine = probes.stream().filter(p -> c.findings().contains(p.id())).toList();
+        if (mine.isEmpty()) return;
+        ArrayNode out = report.putArray("plans");
+        try (Connection b = baseline.db.connectForPlans(baseline.database);
+             Connection a = candidate.db.connectForPlans(candidate.database)) {
+            for (Plans.MissingIndex p : mine) {
+                out.addObject().put("finding", p.id()).put("sql", p.sql())
+                        .put("before", p.plan(b)).put("after", p.plan(a));
+            }
+        }
+    }
+
     private AppRun start(String name, Path jar, boolean agent, ProofDatabase db, String database) throws Exception {
         return AppRun.start(name, jar, agent, config.app(), db.jdbcUrl(database), ProofDatabase.USER,
                 ProofDatabase.PASSWORD, config.logs());
     }
 
     /** Clones the template, starts the application with the agent, replays every request once. */
-    private Run open(String name, Path jar, ProofDatabase db) throws Exception {
+    private Run open(String name, Path jar, ProofDatabase db, List<Plans.MissingIndex> probes) throws Exception {
         String database = "fq_" + name.replace('-', '_');
         db.cloneTemplate(database);
         AppRun app;
@@ -139,7 +247,7 @@ public final class Prover {
             db.drop(database);
             throw e;
         }
-        Run run = new Run(app, db, database, config.requests());
+        Run run = new Run(app, db, database, config.requests(), probes);
         try {
             run.firstPass();
         } catch (Exception | Error e) {
@@ -153,20 +261,22 @@ public final class Prover {
      * One running application: the responses of its first pass (also its warm-up) and a snapshot of
      * {@code /fq/profile} after every pass, so the cost of each round is known separately.
      */
-    private static final class Run implements AutoCloseable {
+    static final class Run implements AutoCloseable {
 
         final AppRun app;
         final ProofDatabase db;
         final String database;
         final List<RequestSpec> requests;
+        final List<Plans.MissingIndex> probes;
         final Map<String, Measurement.Response> responses = new LinkedHashMap<>();
         final List<JsonNode> snapshots = new ArrayList<>();
 
-        Run(AppRun app, ProofDatabase db, String database, List<RequestSpec> requests) {
+        Run(AppRun app, ProofDatabase db, String database, List<RequestSpec> requests, List<Plans.MissingIndex> probes) {
             this.app = app;
             this.db = db;
             this.database = database;
             this.requests = requests;
+            this.probes = probes;
         }
 
         void firstPass() throws Exception {
@@ -185,6 +295,11 @@ public final class Prover {
         Map<String, JsonNode> findings() throws Exception {
             Map<String, JsonNode> findings = new LinkedHashMap<>();
             for (JsonNode f : app.agent("/fq/findings").path("findings")) findings.put(BundleBuilder.findingId(f), f);
+            if (!probes.isEmpty()) {
+                try (Connection c = db.connectForPlans(database)) {
+                    for (Plans.MissingIndex p : probes) p.check(c).ifPresent(f -> findings.put(p.id(), f));
+                }
+            }
             return findings;
         }
 

@@ -44,6 +44,14 @@ final class ProofDatabase implements AutoCloseable {
         return DriverManager.getConnection(jdbcUrl(database), USER, PASSWORD);
     }
 
+    /**
+     * A connection for {@code EXPLAIN (GENERIC_PLAN)} of statements with {@code $n} parameters: simple query
+     * protocol, otherwise the driver binds zero values to a statement that declares some and the server refuses.
+     */
+    Connection connectForPlans(String database) throws SQLException {
+        return DriverManager.getConnection(jdbcUrl(database) + "?preferQueryMode=simple", USER, PASSWORD);
+    }
+
     /** Statistics for the planner, carried over to every clone. */
     void analyzeTemplate() throws SQLException {
         try (Connection c = connect(TEMPLATE); Statement st = c.createStatement()) {
