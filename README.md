@@ -85,7 +85,7 @@ operator: see [docs/ROADMAP.md](docs/ROADMAP.md).
 flairquery/
 ├── core/           flairquery-core: shared fq: tag format/parser and SQL normalizer (no dependency)
 ├── collector/      flairquery-collector: phase 2 PostgreSQL collector
-├── analyzer/       flairquery-analyzer: phase 4 fix proposals (templates + LLM), proven before being proposed
+├── analyzer/       flairquery-analyzer: phase 4 fixes (templates + LLM), proven before being proposed, trap scorecard
 ├── agent/          flairquery-agent: Java 21 agent (relocated ByteBuddy, dependency-free shaded jar)
 ├── demo-app/       flairquery-demo-app: target Spring Boot app, traps documented in TRAPS.md
 ├── it/             flairquery-it: integration tests (Testcontainers + real agent)
@@ -447,7 +447,7 @@ With `FQ_COLLECTOR_AGENT_URL`, the collector also reads the agent's HTTP request
 comparisons are given **per request** (profile M, 1 traffic round before the index of trap 4 and 2 after:
 `GET /reviews/search` 3,540 -> 3 ms of SQL per request, statements per request unchanged elsewhere).
 
-## Analyzer (phase 4, in progress)
+## Analyzer (phase 4)
 
 ```mermaid
 flowchart LR
@@ -593,7 +593,29 @@ Limits: the demo's source comments name its traps (`TRAP 5: ... HHH90003004`), a
 does not give; the output of a model varies from run to run, which is why only the proof decides. The retry
 path (rejection reasons sent back) is covered by unit tests with a scripted model; it was not needed here.
 
-Next step: the scorecard "fixed and proven" per trap, and the documentation of phase 4.
+### Trap scorecard: fixed and proven
+
+On the demo app, `fix` ends with the phase 4 scorecard (also in `target/fixes/scorecard.md`): a trap is FIXED
+only when a fix ACCEPTED by the prover resolves its finding. `FixIT` (`make verify`, no API call) generates the
+template fixes, replays the accepted LLM fixes from reference patches (`analyzer/src/test/resources/fixes`),
+proves all of them against one baseline and asserts (patch names shortened):
+
+```
+trap scorecard (phase 4): 6/6 traps fixed and proven
+  1  FIXED          N+1 authors -> books                   llm-trap1-...      [llm]              GET /authors: 22 -> 2 statements, 65.3 -> 9.3 ms SQL per request
+  2  FIXED          @ManyToOne EAGER publisher             lazy-book-publisher [lazy-association] GET /books: 45 -> 1 statements, 52.2 -> 2.4 ms SQL per request
+  3  FIXED          Over-fetching (book description)       llm-trap3-...      [llm]              GET /books/titles: 501 -> 1 statements, 424.4 -> 5.6 ms SQL per request
+  4  FIXED          Missing index on review.reviewer_name  index-review-...   [index-migration]  GET /reviews/search: 1 -> 1 statements, 11.4 -> 1.8 ms SQL per request
+  5  FIXED          JOIN FETCH + pagination                llm-trap5-...      [llm]              GET /authors/with-books: 326 -> 2 statements, 258.2 -> 3.7 ms SQL per request
+  6  FIXED          open-in-view                           llm-trap6-...      [llm]              GET /authors: 22 -> 2 statements, 57.8 -> 7.9 ms SQL per request
+  7  OUT_OF_SCOPE   Sort spilling to disk                  keyset pagination changes the API; work_mem is phase 6
+  W  CLEAN          Witness GET /publishers/{id}           no fix targets it; JSON identical under every proven fix
+```
+
+The reference patches are the LLM's own output, frozen so that `make verify` stays free and deterministic; when
+the demo changes and one no longer applies or proves, `make llm-it` asks the model again and its accepted patches
+replace them. Trap 7 stays for later: its fix (keyset pagination) changes the API, and `work_mem` belongs to
+phase 6, after the code fixes.
 
 ## Collector (phase 2)
 

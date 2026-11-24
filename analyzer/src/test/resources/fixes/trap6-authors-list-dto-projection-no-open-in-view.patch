@@ -1,0 +1,157 @@
+diff --git a/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/AuthorSummary.java b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/AuthorSummary.java
+new file mode 100644
+--- /dev/null
++++ b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/AuthorSummary.java
+@@ -0,0 +1,4 @@
++package io.github.anthonydeseille.flairquery.demo.repository;
++
++/** Projection of an author: only the columns returned by {@code GET /authors}. */
++public record AuthorSummary(Long id, String name) { }
+diff --git a/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/AuthorBookTitle.java b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/AuthorBookTitle.java
+new file mode 100644
+--- /dev/null
++++ b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/AuthorBookTitle.java
+@@ -0,0 +1,4 @@
++package io.github.anthonydeseille.flairquery.demo.repository;
++
++/** Projection of a book: the id of its author and its title. */
++public record AuthorBookTitle(Long authorId, String title) { }
+diff --git a/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/AuthorRepository.java b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/AuthorRepository.java
+--- a/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/AuthorRepository.java
++++ b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/AuthorRepository.java
+@@ -7,6 +7,8 @@
+ import org.springframework.data.jpa.repository.Query;
+ import org.springframework.data.repository.query.Param;
+ 
++import java.util.List;
++
+ public interface AuthorRepository extends JpaRepository<Author, Long> {
+ 
+     /**
+@@ -17,4 +19,9 @@
+     @Query(value = "select distinct a from Author a join fetch a.books where a.name like concat(:prefix, '%')",
+            countQuery = "select count(a) from Author a where a.name like concat(:prefix, '%')")
+     Page<Author> findWithBooksByNamePrefix(@Param("prefix") String prefix, Pageable pageable);
++
++    /** A page of authors (id + name only) ordered by id, without count query. */
++    @Query("select new io.github.anthonydeseille.flairquery.demo.repository.AuthorSummary(a.id, a.name)"
++           + " from Author a order by a.id")
++    List<AuthorSummary> findSummaries(Pageable pageable);
+ }
+diff --git a/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/BookRepository.java b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/BookRepository.java
+--- a/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/BookRepository.java
++++ b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/BookRepository.java
+@@ -4,7 +4,9 @@
+ import org.springframework.data.domain.Pageable;
+ import org.springframework.data.jpa.repository.JpaRepository;
+ import org.springframework.data.jpa.repository.Query;
++import org.springframework.data.repository.query.Param;
+ 
++import java.util.Collection;
+ import java.util.List;
+ 
+ public interface BookRepository extends JpaRepository<Book, Long> {
+@@ -14,4 +16,9 @@
+ 
+     /** Full entities (with description and the EAGER publisher) although only id + title are returned. */
+     List<Book> findByAuthorIdOrderById(Long authorId);
++
++    /** Titles of the books of the given authors, ordered by author then book id (as {@code Author.books}). */
++    @Query("select new io.github.anthonydeseille.flairquery.demo.repository.AuthorBookTitle(b.author.id, b.title)"
++           + " from Book b where b.author.id in :authorIds order by b.author.id, b.id")
++    List<AuthorBookTitle> findTitlesByAuthorIds(@Param("authorIds") Collection<Long> authorIds);
+ }
+diff --git a/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/service/AuthorService.java b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/service/AuthorService.java
+--- a/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/service/AuthorService.java
++++ b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/service/AuthorService.java
+@@ -1,26 +1,53 @@
+ package io.github.anthonydeseille.flairquery.demo.service;
+ 
+ import io.github.anthonydeseille.flairquery.demo.domain.Author;
++import io.github.anthonydeseille.flairquery.demo.repository.AuthorBookTitle;
+ import io.github.anthonydeseille.flairquery.demo.repository.AuthorRepository;
++import io.github.anthonydeseille.flairquery.demo.repository.AuthorSummary;
++import io.github.anthonydeseille.flairquery.demo.repository.BookRepository;
++import io.github.anthonydeseille.flairquery.demo.web.AuthorBooksDto;
+ import org.springframework.data.domain.PageRequest;
+ import org.springframework.data.domain.Sort;
+ import org.springframework.stereotype.Service;
+ import org.springframework.transaction.annotation.Transactional;
+ 
++import java.util.ArrayList;
++import java.util.HashMap;
+ import java.util.List;
++import java.util.Map;
+ 
+ @Service
+ public class AuthorService {
+ 
+     private final AuthorRepository authors;
++    private final BookRepository books;
+ 
+-    public AuthorService(AuthorRepository authors) {
++    public AuthorService(AuthorRepository authors, BookRepository books) {
+         this.authors = authors;
++        this.books = books;
+     }
+ 
+-    /** Returns managed entities whose lazy books are read later, in the controller (TRAP 1 + 6). */
+-    public List<Author> firstAuthors(int limit) {
+-        return authors.findAll(PageRequest.of(0, limit, Sort.by("id"))).getContent();
++    /**
++     * Builds the DTOs inside the transaction with two projection queries: the page of authors, then the titles
++     * of their books (ordered by id, as {@code Author.books}).
++     */
++    @Transactional(readOnly = true)
++    public List<AuthorBooksDto> firstAuthors(int limit) {
++        List<AuthorSummary> page = authors.findSummaries(PageRequest.of(0, limit));
++        if (page.isEmpty()) {
++            return List.of();
++        }
++        Map<Long, List<String>> titlesByAuthor = new HashMap<>();
++        for (AuthorBookTitle t : books.findTitlesByAuthorIds(page.stream().map(AuthorSummary::id).toList())) {
++            titlesByAuthor.computeIfAbsent(t.authorId(), k -> new ArrayList<>()).add(t.title());
++        }
++        return page.stream()
++                .map(a -> {
++                    List<String> titles = titlesByAuthor.getOrDefault(a.id(), List.of());
++                    return new AuthorBooksDto(a.id(), a.name(), titles.size(),
++                            titles.stream().limit(3).toList());
++                })
++                .toList();
+     }
+ 
+     @Transactional(readOnly = true)
+diff --git a/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/web/AuthorController.java b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/web/AuthorController.java
+--- a/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/web/AuthorController.java
++++ b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/web/AuthorController.java
+@@ -25,13 +25,12 @@
+     }
+ 
+     /**
+-     * TRAP 1 (N+1) + TRAP 6 (open-in-view): authors are loaded by one query, then each
+-     * {@code author.getBooks()} triggers one more query, here in the web layer, outside any transaction:
+-     * it only works because spring.jpa.open-in-view keeps the session open.
++     * The DTOs are built by the service inside its read-only transaction (two projection queries), so nothing
++     * is lazily loaded here in the web layer.
+      */
+     @GetMapping
+     public List<AuthorBooksDto> list(@RequestParam(defaultValue = "50") @Min(1) @Max(500) int limit) {
+-        return authors.firstAuthors(limit).stream().map(AuthorController::toDto).toList();
++        return authors.firstAuthors(limit);
+     }
+ 
+     /** TRAP 5: JOIN FETCH + pagination (HHH90003004, pagination applied in memory). */
+diff --git a/demo-app/src/main/resources/application.yml b/demo-app/src/main/resources/application.yml
+--- a/demo-app/src/main/resources/application.yml
++++ b/demo-app/src/main/resources/application.yml
+@@ -10,7 +10,8 @@
+   jpa:
+     hibernate:
+       ddl-auto: validate
+-    # TRAP 6: spring.jpa.open-in-view is intentionally NOT set (Spring Boot default = true).
++    # No session kept open during the web layer: responses are built inside the @Transactional services.
++    open-in-view: false
+   liquibase:
+     change-log: classpath:db/changelog/db.changelog-master.yaml
+ 

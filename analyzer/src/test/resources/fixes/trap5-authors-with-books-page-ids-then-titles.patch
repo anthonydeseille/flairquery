@@ -1,0 +1,145 @@
+diff --git a/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/AuthorRepository.java b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/AuthorRepository.java
+--- a/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/AuthorRepository.java
++++ b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/AuthorRepository.java
+@@ -1,20 +1,26 @@
+ package io.github.anthonydeseille.flairquery.demo.repository;
+ 
+ import io.github.anthonydeseille.flairquery.demo.domain.Author;
+-import org.springframework.data.domain.Page;
+ import org.springframework.data.domain.Pageable;
+ import org.springframework.data.jpa.repository.JpaRepository;
+ import org.springframework.data.jpa.repository.Query;
+ import org.springframework.data.repository.query.Param;
+ 
++import java.util.List;
++
+ public interface AuthorRepository extends JpaRepository<Author, Long> {
+ 
++    /** Id and name of an author (interface projection). */
++    interface AuthorName {
++        Long getId();
++        String getName();
++    }
++
+     /**
+-     * TRAP 5: collection JOIN FETCH + pagination. Hibernate cannot paginate in SQL, logs HHH90003004
+-     * ("firstResult/maxResults specified with collection fetch; applying in memory") and loads every
+-     * matching author with all of its books before cutting the page in memory.
++     * Page of the authors whose name starts with the prefix and who have at least one book, ordered by id.
++     * Pagination is applied in SQL (no collection fetch); the books are read by a second query.
+      */
+-    @Query(value = "select distinct a from Author a join fetch a.books where a.name like concat(:prefix, '%')",
+-           countQuery = "select count(a) from Author a where a.name like concat(:prefix, '%')")
+-    Page<Author> findWithBooksByNamePrefix(@Param("prefix") String prefix, Pageable pageable);
++    @Query("select a.id as id, a.name as name from Author a where a.name like concat(:prefix, '%')"
++           + " and exists (select b.id from Book b where b.author = a) order by a.id")
++    List<AuthorName> findWithBooksByNamePrefix(@Param("prefix") String prefix, Pageable pageable);
+ }
+diff --git a/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/BookRepository.java b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/BookRepository.java
+--- a/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/BookRepository.java
++++ b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/BookRepository.java
+@@ -4,14 +4,27 @@
+ import org.springframework.data.domain.Pageable;
+ import org.springframework.data.jpa.repository.JpaRepository;
+ import org.springframework.data.jpa.repository.Query;
++import org.springframework.data.repository.query.Param;
+ 
++import java.util.Collection;
+ import java.util.List;
+ 
+ public interface BookRepository extends JpaRepository<Book, Long> {
+ 
++    /** Author id and title of a book (interface projection). */
++    interface AuthorBookTitle {
++        Long getAuthorId();
++        String getTitle();
++    }
++
+     @Query("select b from Book b order by b.id")
+     List<Book> findPage(Pageable pageable);
+ 
+     /** Full entities (with description and the EAGER publisher) although only id + title are returned. */
+     List<Book> findByAuthorIdOrderById(Long authorId);
++
++    /** Titles of the books of the given authors, ordered by author then book id. */
++    @Query("select b.author.id as authorId, b.title as title from Book b where b.author.id in :authorIds"
++           + " order by b.author.id, b.id")
++    List<AuthorBookTitle> findTitlesByAuthorIds(@Param("authorIds") Collection<Long> authorIds);
+ }
+diff --git a/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/service/AuthorService.java b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/service/AuthorService.java
+--- a/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/service/AuthorService.java
++++ b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/service/AuthorService.java
+@@ -2,20 +2,27 @@
+ 
+ import io.github.anthonydeseille.flairquery.demo.domain.Author;
+ import io.github.anthonydeseille.flairquery.demo.repository.AuthorRepository;
++import io.github.anthonydeseille.flairquery.demo.repository.BookRepository;
++import io.github.anthonydeseille.flairquery.demo.web.AuthorBooksDto;
+ import org.springframework.data.domain.PageRequest;
+ import org.springframework.data.domain.Sort;
+ import org.springframework.stereotype.Service;
+ import org.springframework.transaction.annotation.Transactional;
+ 
++import java.util.ArrayList;
++import java.util.HashMap;
+ import java.util.List;
++import java.util.Map;
+ 
+ @Service
+ public class AuthorService {
+ 
+     private final AuthorRepository authors;
++    private final BookRepository books;
+ 
+-    public AuthorService(AuthorRepository authors) {
++    public AuthorService(AuthorRepository authors, BookRepository books) {
+         this.authors = authors;
++        this.books = books;
+     }
+ 
+     /** Returns managed entities whose lazy books are read later, in the controller (TRAP 1 + 6). */
+@@ -23,8 +30,24 @@
+         return authors.findAll(PageRequest.of(0, limit, Sort.by("id"))).getContent();
+     }
+ 
++    /** Pages the authors (with at least one book) in SQL, then reads the titles of their books in one query. */
+     @Transactional(readOnly = true)
+-    public List<Author> withBooks(String prefix, int page, int size) {
+-        return authors.findWithBooksByNamePrefix(prefix, PageRequest.of(page, size, Sort.by("id"))).getContent();
++    public List<AuthorBooksDto> withBooks(String prefix, int page, int size) {
++        List<AuthorRepository.AuthorName> page0 = authors.findWithBooksByNamePrefix(prefix, PageRequest.of(page, size));
++        if (page0.isEmpty()) {
++            return List.of();
++        }
++        List<Long> ids = page0.stream().map(AuthorRepository.AuthorName::getId).toList();
++        Map<Long, List<String>> titles = new HashMap<>();
++        for (BookRepository.AuthorBookTitle t : books.findTitlesByAuthorIds(ids)) {
++            titles.computeIfAbsent(t.getAuthorId(), k -> new ArrayList<>()).add(t.getTitle());
++        }
++        return page0.stream()
++                .map(a -> {
++                    List<String> authorTitles = titles.getOrDefault(a.getId(), List.of());
++                    return new AuthorBooksDto(a.getId(), a.getName(), authorTitles.size(),
++                            authorTitles.stream().limit(3).toList());
++                })
++                .toList();
+     }
+ }
+diff --git a/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/web/AuthorController.java b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/web/AuthorController.java
+--- a/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/web/AuthorController.java
++++ b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/web/AuthorController.java
+@@ -34,12 +34,12 @@
+         return authors.firstAuthors(limit).stream().map(AuthorController::toDto).toList();
+     }
+ 
+-    /** TRAP 5: JOIN FETCH + pagination (HHH90003004, pagination applied in memory). */
++    /** Authors paged in SQL, then the titles of their books read by a second query. */
+     @GetMapping("/with-books")
+     public List<AuthorBooksDto> withBooks(@RequestParam(defaultValue = "Al") String prefix,
+                                           @RequestParam(defaultValue = "0") @Min(0) int page,
+                                           @RequestParam(defaultValue = "20") @Min(1) @Max(200) int size) {
+-        return authors.withBooks(prefix, page, size).stream().map(AuthorController::toDto).toList();
++        return authors.withBooks(prefix, page, size);
+     }
+ 
+     private static AuthorBooksDto toDto(Author a) {

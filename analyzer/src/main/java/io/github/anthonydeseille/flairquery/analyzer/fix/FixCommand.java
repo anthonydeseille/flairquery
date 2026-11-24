@@ -42,6 +42,7 @@ import java.util.function.Consumer;
  *       [--prove true] [--llm claude|off] [--model claude-opus-5-5] [--effort high] [--llm-retries 2]
  *       [--llm-turns 20] [prover options, see {@link ProveCommand}]
  * </pre>
+ * On the demo app, the trap scorecard ({@link TrapScorecard}) is printed and written to {@code scorecard.md}.
  * Exit code 0 when every finding that got a fix ends with a proven one (or {@code --prove false}), 1 otherwise.
  */
 public final class FixCommand {
@@ -132,6 +133,12 @@ public final class FixCommand {
         List<Outcome> outcomes = proveAndRetry(proposals, appDir, app, llm,
                 Integer.parseInt(opt.getOrDefault("llm-retries", "2")), proof, out, System.out::println);
         writeIndex(outcomes, out);
+        Set<String> analyzed = new HashSet<>(bundles.stream().map(b -> b.path("id").asText()).toList());
+        if (proof != null && TrapScorecard.isDemo(analyzed)) {
+            List<TrapScorecard.Row> rows = TrapScorecard.of(outcomes, analyzed);
+            System.out.print(TrapScorecard.text(rows));
+            Files.writeString(out.resolve("scorecard.md"), TrapScorecard.markdown(rows));
+        }
         if (llm != null) {
             LlmClient.Usage u = llm.usage();
             System.out.printf("LLM tokens: %,d input (%,d read from cache, %,d written to it), %,d output%n",

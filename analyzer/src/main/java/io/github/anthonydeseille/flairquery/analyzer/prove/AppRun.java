@@ -51,17 +51,21 @@ final class AppRun implements AutoCloseable {
         this.process = process;
     }
 
+    static final int START_ATTEMPTS = 3;
+
     /**
-     * Starts the application and waits until it is ready; fails with the end of its log otherwise. Retried once
-     * when a port picked as free was taken in the meantime.
+     * Starts the application and waits until it is ready (and its agent answers); fails with the end of its log
+     * otherwise. Restarted on other ports when a port picked as free was taken in the meantime, by the application
+     * (it dies) or by the agent (it keeps the application running without its HTTP server: fail-safe).
      */
     static AppRun start(String name, Path jar, boolean withAgent, Options o, String jdbcUrl, String user,
                         String password, Path logDir) throws IOException, InterruptedException {
-        try {
-            return startOnce(name, jar, withAgent, o, jdbcUrl, user, password, logDir);
-        } catch (IllegalStateException e) {
-            if (!String.valueOf(e.getMessage()).contains("already in use")) throw e;
-            return startOnce(name, jar, withAgent, o, jdbcUrl, user, password, logDir);
+        for (int attempt = 1; ; attempt++) {
+            try {
+                return startOnce(name, jar, withAgent, o, jdbcUrl, user, password, logDir);
+            } catch (IllegalStateException e) {
+                if (!String.valueOf(e.getMessage()).contains("already in use") || attempt >= START_ATTEMPTS) throw e;
+            }
         }
     }
 
@@ -93,11 +97,26 @@ final class AppRun implements AutoCloseable {
         AppRun app = new AppRun(name, port, agentPort, log, pb.start());
         try {
             app.awaitReady(o.readyPath(), o.startTimeout());
+            if (withAgent) app.awaitAgent();
         } catch (IOException | InterruptedException | RuntimeException e) {
             app.close();
             throw e;
         }
         return app;
+    }
+
+    /** The agent's HTTP server answers; it does not when its port was taken (the agent then logs a BindException). */
+    private void awaitAgent() throws IOException, InterruptedException {
+        for (int i = 0; i < 20; i++) {
+            try {
+                agent("/fq/health");
+                return;
+            } catch (ConnectException e) {
+                Thread.sleep(250);
+            }
+        }
+        throw new IllegalStateException("the agent's HTTP server is not listening on port " + agentPort
+                + " (address already in use?)\n" + Exec.tail(log, 30));
     }
 
     private void awaitReady(String readyPath, Duration timeout) throws IOException, InterruptedException {

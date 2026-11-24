@@ -1,0 +1,39 @@
+diff --git a/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/BookRepository.java b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/BookRepository.java
+--- a/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/BookRepository.java
++++ b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/BookRepository.java
+@@ -1,9 +1,11 @@
+ package io.github.anthonydeseille.flairquery.demo.repository;
+ 
+ import io.github.anthonydeseille.flairquery.demo.domain.Book;
++import io.github.anthonydeseille.flairquery.demo.web.BookTitleDto;
+ import org.springframework.data.domain.Pageable;
+ import org.springframework.data.jpa.repository.JpaRepository;
+ import org.springframework.data.jpa.repository.Query;
++import org.springframework.data.repository.query.Param;
+ 
+ import java.util.List;
+ 
+@@ -12,6 +14,8 @@
+     @Query("select b from Book b order by b.id")
+     List<Book> findPage(Pageable pageable);
+ 
+-    /** Full entities (with description and the EAGER publisher) although only id + title are returned. */
+-    List<Book> findByAuthorIdOrderById(Long authorId);
++    /** Only id + title, projected straight into the DTO (no description, no publisher). */
++    @Query("select new io.github.anthonydeseille.flairquery.demo.web.BookTitleDto(b.id, b.title)"
++            + " from Book b where b.author.id = :authorId order by b.id")
++    List<BookTitleDto> findTitlesByAuthorId(@Param("authorId") Long authorId);
+ }
+diff --git a/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/service/BookService.java b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/service/BookService.java
+--- a/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/service/BookService.java
++++ b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/service/BookService.java
+@@ -26,8 +26,6 @@
+     }
+ 
+     public List<BookTitleDto> titlesOfAuthor(long authorId) {
+-        return books.findByAuthorIdOrderById(authorId).stream()
+-                .map(b -> new BookTitleDto(b.getId(), b.getTitle()))
+-                .toList();
++        return books.findTitlesByAuthorId(authorId);
+     }
+ }
