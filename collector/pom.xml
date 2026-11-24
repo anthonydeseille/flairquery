@@ -7,7 +7,7 @@
   <parent>
     <groupId>io.github.anthonydeseille.flairquery</groupId>
     <artifactId>flairquery-parent</artifactId>
-    <version>0.5.0</version>
+    <version>0.6.0-SNAPSHOT</version>
   </parent>
 
   <artifactId>flairquery-collector</artifactId>
