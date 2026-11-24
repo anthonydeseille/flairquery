@@ -6,6 +6,7 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.OneToMany;
+import jakarta.persistence.OrderBy;
 import jakarta.persistence.Table;
 
 import java.time.LocalDate;
@@ -32,8 +33,13 @@ public class Author {
     @Column(name = "ol_key")
     private String olKey;
 
-    /** LAZY (JPA default for collections): iterating it per author is TRAP 1 (N+1). */
+    /**
+     * LAZY (JPA default for collections): iterating it per author is TRAP 1 (N+1). Ordered so that the JSON of
+     * {@code GET /authors} (first titles) does not depend on the SQL plan: without it, any change to the book
+     * query (e.g. the fix of trap 2) changes the row order and therefore the response.
+     */
     @OneToMany(mappedBy = "author")
+    @OrderBy("id")
     private List<Book> books = new ArrayList<>();
 
     protected Author() { }

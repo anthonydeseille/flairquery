@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.anthonydeseille.flairquery.analyzer.bundle.BundleBuilder;
 import io.github.anthonydeseille.flairquery.analyzer.code.SourceLocator;
 import io.github.anthonydeseille.flairquery.analyzer.input.JsonSource;
+import io.github.anthonydeseille.flairquery.analyzer.prove.ProveCommand;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -19,20 +20,29 @@ import java.util.Map;
  *
  * <pre>
  *   bundle --agent URL --collector URL --source DIR --out DIR [--window 1h]
+ *   prove  --finding ID --patch FILE[,FILE...] [options, see {@link ProveCommand}]
  * </pre>
- * Writes one evidence bundle per finding ({@code <id>.json}) and an {@code index.json}.
+ * {@code bundle} writes one evidence bundle per finding ({@code <id>.json}) and an {@code index.json};
+ * {@code prove} proves patches for one finding (accepted / rejected, one report per patch).
  */
 public final class AnalyzerMain {
 
     private AnalyzerMain() { }
 
     public static void main(String[] args) throws Exception {
+        // Testcontainers / docker-java log through SLF4J: warnings only
+        System.setProperty("org.slf4j.simpleLogger.defaultLogLevel",
+                System.getProperty("org.slf4j.simpleLogger.defaultLogLevel", "warn"));
         System.exit(run(args));
     }
 
     static int run(String[] args) throws Exception {
+        if (args.length > 0 && args[0].equals("prove")) {
+            return ProveCommand.run(options(args));
+        }
         if (args.length == 0 || !args[0].equals("bundle")) {
             System.err.println("usage: bundle --agent URL --collector URL --source DIR --out DIR [--window 1h]");
+            System.err.println("       " + ProveCommand.USAGE.substring("usage: ".length()));
             return 2;
         }
         Map<String, String> opt = options(args);

@@ -54,6 +54,14 @@ The phase 3 rules also report real problems that are not numbered traps. They ar
 Entities loaded only because of a useless EAGER (the `Publisher` rows) are not reported a second time as
 over-fetching.
 
+## Deterministic responses (phase 4)
+
+The phase 4 prover only accepts a fix when every JSON response stays strictly identical. `Author.books` is
+therefore `@OrderBy("id")`: `GET /authors` returns the first three titles of each author, and without an
+order they followed the SQL plan. The fix of trap 2 (`Book.publisher` LAZY) removes a `left join publisher`
+from the book query, which changed the row order and the response; the prover rejected it, rightly. This is
+not a trap: an accidental non-determinism, fixed in the demo app.
+
 ## Measuring a fix (phase 2)
 
 Trap 4 on profile M, with `make mark`, one `make traffic-local` per period and

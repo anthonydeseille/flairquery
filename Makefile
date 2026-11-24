@@ -64,6 +64,12 @@ analyze-local: ## Evidence bundle per finding (phase 4) from the local agent + c
 	java -jar analyzer/target/flairquery-analyzer.jar bundle --agent http://localhost:9464 \
 	  --collector http://localhost:$(or $(COLLECTOR_PORT),9465) --source demo-app --out target/analysis --window $(or $(WINDOW),1h)
 
+.PHONY: prove-local
+prove-local: ## Prove patches for one finding (FINDING=<id> PATCH=a.patch[,b.patch] [ROUNDS=5]); needs Docker -> target/proofs
+	@test -n "$(FINDING)" -a -n "$(PATCH)" || { echo "usage: make prove-local FINDING=<id from target/analysis/index.json> PATCH=fix.patch"; exit 2; }
+	./mvnw -B -q -pl core,agent,analyzer -am package -DskipTests
+	java -jar analyzer/target/flairquery-analyzer.jar prove --finding $(FINDING) --patch $(PATCH) --rounds $(or $(ROUNDS),5)
+
 .PHONY: openlibrary
 openlibrary: ## Stream Open Library dumps and cache a small subset (~/.cache/flairquery/openlibrary)
 	python3 -I corpus/openlibrary/fetch.py $(OL_ARGS)

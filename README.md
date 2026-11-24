@@ -449,6 +449,34 @@ comparisons are given **per request** (profile M, 1 traffic round before the ind
 
 ## Analyzer (phase 4, in progress)
 
+```mermaid
+flowchart LR
+    subgraph observe["Observe (phases 1-3)"]
+        A["Agent<br/>/fq/findings, /fq/profile"]
+        C["Collector<br/>plans, column stats"]
+    end
+    S[("Application<br/>source tree")]
+    B["1. Evidence bundle<br/>finding + SQL + source files"]
+    G["2. Fix generator<br/>templates (step 3), LLM (step 4)"]
+    subgraph prover["3. Prover (throw-away copy)"]
+        direction TB
+        P1["copy app + apply patch<br/>build baseline and candidate"]
+        P2["PostgreSQL (Testcontainers)<br/>seeded template, one clone per run"]
+        P3["replay every endpoint<br/>baseline / candidate alternated"]
+        P4{"identical JSON?<br/>finding gone? no new finding?<br/>fewer statements, less SQL time?"}
+        P1 --> P2 --> P3 --> P4
+    end
+    R["Proven fix + report"]
+    X["Rejected<br/>with reasons"]
+    M["Merge request<br/>(phase 5, human review)"]
+    A --> B
+    C --> B
+    S --> B
+    B --> G --> P1
+    P4 -- yes --> R --> M
+    P4 -- no --> X
+```
+
 `flairquery-analyzer` turns every finding into an **evidence bundle**: the finding (agent JPA side, or
 database side derived from the collector: `MISSING_INDEX`, `SORT_SPILL`), the endpoint's statements with
 their cost and callers, and the **source files a fix would touch**, each with its role (entity, caller with
@@ -459,9 +487,43 @@ make demo-local && make collector-local && make traffic-local    # three termina
 make analyze-local                                               # -> target/analysis/<id>.json + index.json
 ```
 
-Next steps: the prover (apply a fix on a copy, rebuild, rerun every endpoint, identical JSON, fewer
-statements and less SQL time per request), deterministic fixes, then LLM-generated fixes, never proposed
-without that proof.
+A finding's id is stable (`kind|endpoint|subject` hashed): the same problem has the same id on every run.
+
+### Prover
+
+Nothing is proposed without proof. `prove` takes a finding id and one or more patches (`git diff` at the
+repository root) and decides, for each, **ACCEPTED** or **REJECTED** (with the reasons):
+
+```bash
+git diff -- demo-app > /tmp/fix.patch && git checkout -- demo-app     # a fix, as a patch
+make prove-local FINDING=useless-eager-24294e29 PATCH=/tmp/fix.patch  # needs Docker -> target/proofs/<finding>/
+```
+
+1. The application is copied (never modified in place), each patch applied on its own copy (a patch outside
+   the application directory is refused), the baseline and every candidate built (`mvnw package`).
+2. A throw-away PostgreSQL 16 (Testcontainers): the baseline creates the schema (its migrations), the data is
+   loaded once (corpus S for the demo) into a template database; every run gets its own clone, so a candidate
+   adding a migration never changes what the others see.
+3. The baseline and each candidate run side by side with the agent: one pass over every request
+   (`analyzer/requests-demo.txt`, responses recorded), then rounds **alternated** between baseline and
+   candidate; an endpoint's cost is the **median** of its rounds (statements and SQL time per request, from
+   `/fq/profile`).
+4. Accepted only when: every response has the same status and a **strictly identical JSON** (reports give the
+   JSON path, never the values); the finding is **gone**; **no new finding**; its endpoint runs **fewer
+   statements and less SQL time** (or, same statements, at least 20 % less SQL time: an index); no other
+   endpoint runs more statements or noticeably more SQL time. An endpoint running exactly the same SQL while
+   no migration changed cannot be slowed down by the patch: its time difference is reported as noise.
+
+Validated on the demo (`ProverIT`, three hand-written patches for trap 2, profile S):
+
+| Patch | Verdict | Why |
+|---|---|---|
+| `Book.publisher` `fetch = LAZY` | ACCEPTED | `GET /books` 45 -> 1 statement, ~90 -> ~3 ms SQL per request; the useless EAGER also disappears from `/books/titles` (501 -> 1 statement) and `/authors/with-books` (326 -> 2); JSON identical everywhere |
+| DTO projection ordered by title | REJECTED | faster and the finding is gone, but `/books?limit=50` JSON differs at `/0/id` |
+| explicit `fetch = EAGER` | REJECTED | finding still reported, 45 -> 45 statements |
+
+Next steps: deterministic fixes (traps 2 and 4) generated and proven, then LLM-generated fixes (traps 1,
+3, 5, 6), never proposed without that proof.
 
 ## Collector (phase 2)
 

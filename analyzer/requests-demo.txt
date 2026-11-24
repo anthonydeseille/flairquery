@@ -1,0 +1,10 @@
+# Requests the prover replays on the demo app before and after a fix (same endpoints as scripts/traffic.sh).
+# <path> [json|status]: json (default) = the JSON body must be strictly identical; status = HTTP status only.
+/authors?limit=20
+/books?limit=50
+/books/titles?authorId=7
+/reviews/search?reviewer=Alice%20Martin%2000000
+/authors/with-books?prefix=Al&size=5
+# body not compared, as in the integration tests (it/.../Traffic.DETERMINISTIC)
+/reviews/ranking?page=400&size=50 status
+/publishers/1

@@ -200,8 +200,14 @@ public final class BundleBuilder {
         files.put(file, s);
     }
 
+    /** Stable id of a finding (agent or database side): the same problem gets the same id on every run. */
+    public static String findingId(JsonNode finding) {
+        String kind = finding.path("kind").asText();
+        return id(kind, finding.path("endpoint").asText(), subject(kind, finding.path("evidence")));
+    }
+
     /** What the finding is about: association, entity, table.column... (part of its stable id). */
-    static String subject(String kind, JsonNode ev) {
+    public static String subject(String kind, JsonNode ev) {
         return switch (kind) {
             case "N_PLUS_ONE_LAZY", "USELESS_EAGER" -> ev.path("association").asText();
             case "OVER_FETCHING" -> ev.path("entity").asText();
@@ -211,7 +217,7 @@ public final class BundleBuilder {
         };
     }
 
-    static String id(String kind, String endpoint, String subject) {
+    public static String id(String kind, String endpoint, String subject) {
         try {
             byte[] d = MessageDigest.getInstance("SHA-256")
                     .digest((kind + "|" + endpoint + "|" + subject).getBytes(StandardCharsets.UTF_8));

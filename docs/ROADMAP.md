@@ -44,6 +44,9 @@ witness clean. Inputs for phase 4: each finding's evidence (association, caller,
 statements), the plans and the column selectivity from phase 2.
 
 ## Phase 4 — LLM analyzer
+Status: step 1 (evidence bundles) and step 2 (the prover: identical JSON, finding gone, no new finding,
+fewer statements and less SQL time, on a Testcontainers copy) done; next, deterministic fixes for traps 2
+and 4, then LLM-generated fixes.
 - Inputs: source code (entity, repository, service), plan, schema, endpoint profile
 - Proposals: LAZY + `@EntityGraph` / `JOIN FETCH` per use case, DTO projections,
   `@BatchSize` / `default_batch_fetch_size`, `@Query` rewrites, indexes (Liquibase changeset,

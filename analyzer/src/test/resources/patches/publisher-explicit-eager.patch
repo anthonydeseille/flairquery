@@ -1,0 +1,13 @@
+diff --git a/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/domain/Book.java b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/domain/Book.java
+index 5a000a8..21f88d8 100644
+--- a/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/domain/Book.java
++++ b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/domain/Book.java
+@@ -38,7 +38,7 @@ public class Book {
+      * TRAP 2: {@code @ManyToOne} is EAGER by default (JPA spec). Never read by GET /books, yet every
+      * JPQL query on Book triggers extra selects to load publishers.
+      */
+-    @ManyToOne
++    @ManyToOne(fetch = FetchType.EAGER)
+     @JoinColumn(name = "publisher_id")
+     private Publisher publisher;
+ 

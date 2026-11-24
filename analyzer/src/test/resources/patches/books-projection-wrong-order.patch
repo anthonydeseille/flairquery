@@ -1,0 +1,29 @@
+diff --git a/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/BookRepository.java b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/BookRepository.java
+index 0f7420d..5e782a5 100644
+--- a/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/BookRepository.java
++++ b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/repository/BookRepository.java
+@@ -12,6 +12,9 @@ public interface BookRepository extends JpaRepository<Book, Long> {
+     @Query("select b from Book b order by b.id")
+     List<Book> findPage(Pageable pageable);
+ 
++    @Query("select new io.github.anthonydeseille.flairquery.demo.web.BookDto(b.id, b.title, b.isbn, b.publicationYear) from Book b order by b.title")
++    List<io.github.anthonydeseille.flairquery.demo.web.BookDto> findDtoPage(Pageable pageable);
++
+     /** Full entities (with description and the EAGER publisher) although only id + title are returned. */
+     List<Book> findByAuthorIdOrderById(Long authorId);
+ }
+diff --git a/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/service/BookService.java b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/service/BookService.java
+index 42f1e80..c5e5225 100644
+--- a/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/service/BookService.java
++++ b/demo-app/src/main/java/io/github/anthonydeseille/flairquery/demo/service/BookService.java
+@@ -20,9 +20,7 @@ public class BookService {
+     }
+ 
+     public List<BookDto> firstBooks(int limit) {
+-        return books.findPage(PageRequest.of(0, limit)).stream()
+-                .map(b -> new BookDto(b.getId(), b.getTitle(), b.getIsbn(), b.getPublicationYear()))
+-                .toList();
++        return books.findDtoPage(PageRequest.of(0, limit));
+     }
+ 
+     public List<BookTitleDto> titlesOfAuthor(long authorId) {
