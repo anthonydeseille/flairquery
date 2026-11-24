@@ -43,6 +43,7 @@ operator: see [docs/ROADMAP.md](docs/ROADMAP.md).
 - [Kubernetes (kind) and K9s plugin](#kubernetes-kind-and-k9s-plugin)
 - [Fail-safe guarantees](#fail-safe-guarantees)
 - [Known limitations](#known-limitations)
+- [License](#license)
 
 ## Phase 1 status
 
@@ -1006,6 +1007,11 @@ every minute so that it never grows with the application's lifetime.
 15. **Rows read are counted on result set classes whose name contains `ResultSet`** (`PgResultSet`,
     `HikariProxyResultSet`, `JdbcResultSet`, `ResultSetImpl`...): a name pre-filter that keeps startup cheap.
     A driver naming its result sets otherwise would not have its rows counted (everything else works).
+
+## License
+
+FlairQuery is licensed under the [Apache License 2.0](LICENSE). The agent jar embeds Byte Buddy (Apache 2.0) and
+ASM (BSD-3-Clause), whose licenses ship inside it (`META-INF/LICENSE`, `META-INF/NOTICE`, `META-INF/licenses/`).
 
 ## Data license
 

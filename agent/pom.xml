@@ -114,8 +114,7 @@
                     <exclude>META-INF/*.SF</exclude>
                     <exclude>META-INF/*.DSA</exclude>
                     <exclude>META-INF/*.RSA</exclude>
-                    <exclude>META-INF/LICENSE*</exclude>
-                    <exclude>META-INF/NOTICE*</exclude>
+                    <!-- META-INF/LICENSE and NOTICE are kept: Byte Buddy's (Apache 2.0) must ship with it -->
                   </excludes>
                 </filter>
               </filters>

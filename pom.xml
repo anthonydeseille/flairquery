@@ -10,6 +10,15 @@
   <packaging>pom</packaging>
   <name>FlairQuery</name>
   <description>SQL / endpoint analysis for Java, Spring and JPA applications on Kubernetes</description>
+  <url>https://github.com/anthonydeseille/flairquery</url>
+
+  <licenses>
+    <license>
+      <name>Apache-2.0</name>
+      <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
 
   <modules>
     <module>core</module>
