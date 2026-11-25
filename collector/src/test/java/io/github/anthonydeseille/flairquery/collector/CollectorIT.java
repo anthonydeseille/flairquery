@@ -417,6 +417,42 @@ class CollectorIT {
         }
     }
 
+    /** The observed database unreachable (e.g. "too many clients"): the cycle fails, the infrastructure is still read. */
+    @Test
+    void infraIsStoredWhenTheObservedDatabaseRefusesTheCycle() throws Exception {
+        Target down = new Target("it", "jdbc:postgresql://127.0.0.1:1/flairquery", "fq_reader", "fq_reader");
+        java.util.concurrent.atomic.AtomicInteger reads = new java.util.concurrent.atomic.AtomicInteger();
+        io.github.anthonydeseille.flairquery.collector.infra.InfraCollector infra =
+                new io.github.anthonydeseille.flairquery.collector.infra.InfraCollector(new PostgresSource(down), null, null) {
+                    @Override
+                    public List<io.github.anthonydeseille.flairquery.collector.infra.InfraSample> read() {
+                        reads.incrementAndGet();
+                        return List.of(new io.github.anthonydeseille.flairquery.collector.infra.InfraSample(
+                                "container", "fq-dev/demo-app-0/demo-app", Map.of("workload", "Deployment/demo-app")));
+                    }
+                };
+        Collector c = new Collector(new PostgresSource(down), null, null, store, Duration.ofHours(72), Duration.ZERO,
+                Clock.systemUTC()).withInfra(infra);
+        c.runSafely();
+        assertThat(c.errors()).isEqualTo(1);
+        assertThat(reads.get()).isEqualTo(1);
+        assertThat(store.infraSamples("it", "container", Instant.EPOCH)).hasSize(1);
+    }
+
+    /** A backlog read in tiny chunks (lines longer than a chunk, many reads) gives the same attribution. */
+    @Test
+    void logBacklogReadInChunksLosesNothing() throws Exception {
+        Target target = new Target("it", observed.getJdbcUrl(), "fq_reader", "fq_reader");
+        Collector chunked = new Collector(new PostgresSource(target), new SqlLogPlanSource(target, 64L * 1024 * 1024, 300),
+                store, Duration.ofHours(72), Duration.ZERO, Clock.systemUTC());
+        chunked.collectOnce();   // baseline: skips the existing log
+        tagged(25);
+        Thread.sleep(300);
+        chunked.collectOnce();
+        assertThat(store.endpoints("it", Instant.EPOCH, 5)).extracting(e -> e.get("endpoint") + "=" + e.get("executions"))
+                .contains("GET /authors=25");
+    }
+
     @Test
     void agentRequestCountsGiveDeltasSurviveRestartsAndNeverFailACycle() throws Exception {
         Target target = new Target("it", observed.getJdbcUrl(), "fq_reader", "fq_reader");

@@ -11,7 +11,7 @@ import java.util.List;
  * and their cAdvisor usage (when running in a cluster), and the JVM of every agent (every replica found in Kubernetes,
  * otherwise the configured agent URL). Each source is an enrichment: a failure is logged and the others are kept.
  */
-public final class InfraCollector {
+public class InfraCollector {   // not final: tests stub read()
 
     private final PostgresSource postgres;
     private final KubernetesSource kubernetes;   // null: not in a cluster or disabled

@@ -43,9 +43,32 @@ refused connection and, for I4, `temp_blks_written` = 0 on trap 7.
 | I2 | **Requests far below usage**: `cpu: 25m`, `memory: 64Mi` | `demo-app.yaml` (`resources.requests`) | `requests` against `cpu.usageP95Millis` and `memory.workingSetMaxBytes` (hundreds of MiB): the scheduler places the pod on a node that cannot hold it | requests from the measured p95 CPU and the memory peak |
 | I3 | **CPU limit too tight**: `cpu: 500m` | `demo-app.yaml` (`resources.limits`) | `cpu.throttledRatio` high during load and at startup, `startupSecondsMax` ~45 s+ | a higher limit (or none, with a request at the p95), checked against startup and p95 latency |
 | I4 | **`work_mem` 64kB**: trap 7's sort spills to disk | `postgresql-fq.conf` | `postgres.settings.work_mem` 64 KiB, `postgres.database.tempBytes` > 0 over the window, trap 7's `temp_blks_written` > 0 | `work_mem` sized from the spilled bytes (per role, reloadable), or trap 7's code fix first (keyset pagination) |
-| I5 | **`shared_buffers` 32MB** for a corpus of several GB | `postgresql-fq.conf` | `postgres.settings.shared_buffers` 32 MiB, `postgres.database.cacheHitRatio` low under load, PostgreSQL's working set far below its 1Gi limit | `shared_buffers` ~25 % of the container memory limit, `effective_cache_size` consistent (restart: human review only) |
+| I5 | **`shared_buffers` 32MB** for a corpus of several GB (profile M; on profile S the data fit) | `postgresql-fq.conf` | `postgres.settings.shared_buffers` 32 MiB, `postgres.database.cacheHitRatio` low under load, PostgreSQL's working set far below its 1Gi limit | `shared_buffers` ~25 % of the container memory limit, `effective_cache_size` consistent (restart: human review only) |
 | I6 | **Pool × replicas > `max_connections`**: Hikari 20 × 3 replicas = 60 > 50 (47 for clients after the 3 reserved) | overlay `pool-overflow` | `jvms[].hikari[].maximumPoolSize` × the replicas of `containers[]` against `postgres.connections.maxConnections` - `reserved`; `peakWaiting` > 0, refused connections at startup or under load | a pool per replica such that pool × max replicas (HPA) + other clients ≤ `max_connections` - reserved, or a bouncer |
-| ✓ | **Clean witness**: the collector (`fq-collector`, requests 50m/128Mi, limits 500m/256Mi, a plain JVM) | `collector.yaml` | steady-state usage within its requests and limits, no OOMKill, no restart (its JVM startup is briefly throttled, as any JVM under a 500m limit: measured over a window that includes it, not a finding) | **never flagged** |
+| ✓ | **Clean witness**: the collector (`fq-collector`, requests 50m/224Mi, limits 500m/256Mi, a plain JVM) | `collector.yaml` | steady-state usage within its requests and limits, no OOMKill, no restart (its JVM startup is briefly throttled, as any JVM under a 500m limit: measured over a window that includes it, not a finding) | **never flagged** |
+
+### Phase 6 scorecard: detected by `size` (measured on kind, profile S)
+
+`make size` (analyzer `size`, deterministic, no LLM) after 40 load rounds; two deployments, since I6 needs the
+`pool-overflow` overlay:
+
+| # | dev overlay (1 replica, pool 10) | pool-overflow overlay (3 replicas x pool 20) | Proposed (to be proven by the replay, step 3) |
+|---|---|---|---|
+| I1 | ✅ DETECTED: heap max 596 MiB + native ~243 MiB > 768 MiB | ✅ DETECTED | `MaxRAMPercentage` 60 (heap 461 MiB, live set peak ~76 MiB) |
+| I2 | ✅ DETECTED: CPU 25m for a p95 of 426m, memory 64Mi for a 363 MiB peak | ✅ DETECTED | requests `450m` / `448Mi` |
+| I3 | ✅ DETECTED: 11 % throttled under load at 85 % of the limit (marginal: the strong signal is the startup) | ✅ DETECTED: 100 % throttled during a 77 s startup | CPU limit `1` |
+| I4 | ✅ DETECTED: 3.4 GB of temporary files, trap 7's sort spilling ~20 MB per call | ✅ DETECTED | `ALTER ROLE flairquery SET work_mem = '32MB'` (the memory budget caps it: trap 7's code fix remains the real remedy) |
+| I5 | ⏸ NOT TRIGGERED: 49 MB of data fit in 32 MB of shared_buffers + the OS cache (hit ratio 97.7-100 %); visible on profile M (hit ratio 38 % measured on 2026-11-24) | ⏸ NOT TRIGGERED | (profile M: `shared_buffers` 256MB, `effective_cache_size` 768MB, restart) |
+| I6 | — not deployed | ✅ DETECTED: the rollout stuck on `FATAL: sorry, too many clients already`; pools 10 + 20 + 20 + 20 (one crashing pod) = 70 > 43 left by PostgreSQL | `HIKARI_MAX_POOL` 10 for the 4 pods measured (14 for 3) |
+| ✓ | ✅ CLEAN | ✅ CLEAN | — |
+
+Secondary findings (true, not numbered traps): PostgreSQL's CPU request (100m for a p95 of ~490m under load) is
+reported `REQUESTS_BELOW_USAGE`. The witness itself was first flagged: its memory request (128Mi) was below its
+measured peak (180 MiB under load); corrected to the `224Mi` that `size` proposed, it is clean.
+
+Found while measuring, and fixed: the collector got OOMKilled reading a 45 MB log backlog in one go (now read in
+4 MB chunks, 16 MB per cycle by default), and during I6 it could not connect either (`too many clients`): its
+infrastructure readings are now stored even when the observed database refuses the cycle.
 
 ## Reference measurements (profile S, local, agent enabled)
 

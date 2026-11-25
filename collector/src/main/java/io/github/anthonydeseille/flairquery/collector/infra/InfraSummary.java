@@ -20,12 +20,16 @@ import java.util.TreeMap;
  */
 public final class InfraSummary {
 
+    /** CFS periods (100 ms) of startup needed before a pod's startup throttling ratio is considered. */
+    static final int MIN_STARTUP_PERIODS = 50;
+
     private InfraSummary() { }
 
     // ---------------------------------------------------------------- containers
 
     /**
-     * Grouped by workload and container name, all replicas together.
+     * Grouped by workload and container name, all replicas together. CPU usage and throttling are measured on the
+     * steady intervals (container Ready); the startup intervals are reported apart ({@code startup}).
      *
      * @param since start of the window: a startup time is only reported for containers started inside it (a pod's
      *              Ready transition can be much later than its start when readiness was lost and regained)
@@ -54,19 +58,26 @@ public final class InfraSummary {
         double throttled = 0;
         double throttledSeconds = 0;
         double oomEvents = 0;
+        double startupPeriods = 0;
+        double startupThrottled = 0;
+        Double startupCpu = null;
         List<Double> workingSet = new ArrayList<>();
         Double rssMax = null;
         int restarts = 0;
         int oomKilled = 0;
         Double startupMax = null;
         List<String> pods = new ArrayList<>();
-        int replicas = 0;   // pods in the latest reading (the others were replaced or scaled down in the window)
+        List<String> currentPods = new ArrayList<>();   // pods in the latest reading (others replaced or scaled down)
         List<Map<String, Object>> terminations = new ArrayList<>();
+        Double worstStartupRatio = null;   // the most throttled startup, pod by pod (a crash-looping pod in back-off
+                                           // would dilute an aggregate)
         for (Map.Entry<String, List<StoredSample>> e : byPod.entrySet()) {
             List<StoredSample> ss = e.getValue();
+            double podStartupPeriods = 0;
+            double podStartupThrottled = 0;
             Map<String, Object> last = ss.get(ss.size() - 1).payload();
             pods.add((String) last.get("pod"));
-            if (ss.get(ss.size() - 1).takenAt().equals(latest.takenAt())) replicas++;
+            if (ss.get(ss.size() - 1).takenAt().equals(latest.takenAt())) currentPods.add((String) last.get("pod"));
             restarts += intOf(last.get("restarts"));
             if (last.get("lastTermination") instanceof Map<?, ?> t) {
                 Map<String, Object> term = new LinkedHashMap<>();
@@ -88,18 +99,32 @@ public final class InfraSummary {
                 if (!sameContainer(prev, ss.get(i))) continue;   // restarted: counters started again
                 Map<String, Object> pu = usage(prev);
                 double seconds = Duration.between(prev.takenAt(), ss.get(i).takenAt()).toMillis() / 1000.0;
+                boolean inStartup = startupInterval(prev, ss.get(i).payload());
                 Double dCpu = delta(pu, u, "cpuUsageSeconds");
-                if (dCpu != null && seconds > 0) cpuRates.add(dCpu / seconds);
+                if (dCpu != null && seconds > 0) {
+                    if (inStartup) startupCpu = maxOf(startupCpu, dCpu / seconds);
+                    else cpuRates.add(dCpu / seconds);
+                }
                 Double dp = delta(pu, u, "cfsPeriods");
                 Double dt = delta(pu, u, "cfsThrottledPeriods");
                 if (dp != null && dt != null) {
-                    periods += dp;
-                    throttled += dt;
+                    if (inStartup) {
+                        startupPeriods += dp;
+                        startupThrottled += dt;
+                        podStartupPeriods += dp;
+                        podStartupThrottled += dt;
+                    } else {
+                        periods += dp;
+                        throttled += dt;
+                    }
                 }
                 Double ds = delta(pu, u, "cfsThrottledSeconds");
-                if (ds != null) throttledSeconds += ds;
+                if (ds != null && !inStartup) throttledSeconds += ds;
                 Double doom = delta(pu, u, "oomEvents");
                 if (doom != null) oomEvents += doom;
+            }
+            if (podStartupPeriods >= MIN_STARTUP_PERIODS) {
+                worstStartupRatio = maxOf(worstStartupRatio, podStartupThrottled / podStartupPeriods);
             }
         }
 
@@ -108,7 +133,8 @@ public final class InfraSummary {
         m.put("workload", lp.get("workload"));
         m.put("container", lp.get("container"));
         m.put("pods", pods);
-        m.put("replicas", replicas);
+        m.put("replicas", currentPods.size());
+        m.put("currentPods", currentPods);
         m.put("requests", lp.get("requests"));
         m.put("limits", lp.get("limits"));
         m.put("qosClass", lp.get("qosClass"));
@@ -128,12 +154,35 @@ public final class InfraSummary {
         cpu.put("throttledSeconds", round4(throttledSeconds));
         cpu.put("rateSamples", cpuRates.size());
         m.put("cpu", cpu);
+        // intervals that started before the container was Ready: JVM startup (class loading, JIT), kept apart so a
+        // startup burst is neither read as steady usage nor as steady throttling
+        Map<String, Object> st = new LinkedHashMap<>();
+        st.put("cfsPeriods", Math.round(startupPeriods));
+        st.put("throttledPeriods", Math.round(startupThrottled));
+        st.put("throttledRatio", worstStartupRatio == null ? null : round4(worstStartupRatio));   // worst pod
+        st.put("throttledRatioAllPods", startupPeriods > 0 ? round4(startupThrottled / startupPeriods) : null);
+        st.put("usageMaxMillis", millis(startupCpu));
+        m.put("startup", st);
         m.put("restarts", restarts);
         m.put("oomKilled", oomKilled);
         m.put("oomEvents", Math.round(oomEvents));
         m.put("lastTerminations", terminations);
         m.put("startupSecondsMax", startupMax);
         return m;
+    }
+
+    /** True when the interval starting at {@code prev} began before the container was Ready. */
+    static boolean startupInterval(StoredSample prev, Map<String, Object> current) {
+        if (!Boolean.TRUE.equals(prev.payload().get("ready"))) return true;
+        Object at = current.get("startedAt");
+        Double startup = dbl(current.get("startupSeconds"));
+        if (at == null || startup == null) return false;
+        try {
+            java.time.Instant readyAt = java.time.Instant.parse(at.toString()).plusMillis(Math.round(startup * 1000));
+            return prev.takenAt().isBefore(readyAt);
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private static boolean startedBefore(Map<String, Object> p, java.time.Instant since) {

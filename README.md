@@ -822,6 +822,34 @@ kubectl -n fq-dev port-forward svc/fq-collector 9465 &
 curl -s 'localhost:9465/fq/collector/infra?window=15m' | jq '.containers[] | {workload, container, requests, limits, cpu, memory, restarts, oomKilled}'
 ```
 
+CPU usage and throttling are measured on the steady intervals (container Ready); the startup intervals are reported
+apart (`startup`: the most throttled pod startup, and all pods together), so a JVM's startup burst is neither read as
+steady usage nor as steady throttling. When the observed database refuses the collection cycle (e.g. `too many
+clients`), the Kubernetes and JVM readings are stored anyway.
+
+**Sizing findings (`size`, phase 6).** The analyzer's `size` command turns these measurements into findings,
+deterministically (no LLM), each with its evidence, the configuration in place and a recommended one computed from
+the measurements. Only long-lived workloads are sized (Deployment, StatefulSet, DaemonSet); a rule without enough
+data (fewer than 4 steady CPU samples) stays silent. The recommendations are hypotheses until replayed on kind
+(step 3).
+
+| Rule | Flagged when | Recommendation |
+|---|---|---|
+| `JVM_HEAP_TOO_LARGE` | heap max + native memory (non-heap peak + 1 MiB per thread + 64 MiB) > memory limit, or OOMKilled | `MaxRAMPercentage` = (limit - native x 1.25) / limit, rounded down to 5 %, if the heap still holds 2 x the live set; otherwise a limit raised to fit both |
+| `REQUESTS_BELOW_USAGE` | CPU request < 0.5 x steady p95, or memory request < 0.8 x working-set peak | CPU request = p95 (25m steps); memory request = peak x 1.15 (32Mi steps, at most the limit) |
+| `CPU_THROTTLED` | steady throttling >= 10 % of the CFS periods (100+) with a p95 usage >= 50 % of the limit (a mostly idle container whose bursts exhaust single 100 ms periods is not a CPU shortage), or the most throttled pod startup >= 50 % for a startup of 30 s+ | limit doubled (at least 1.5 x p95, 250m steps): a throttled container's real demand is unknown, the replay decides |
+| `WORK_MEM_SPILLS` | temporary files written in the window | `work_mem` = biggest spill per execution x 2 (power of two), within (PostgreSQL limit - shared_buffers - 64 MiB) / (peak connections x 2); `ALTER ROLE ... SET work_mem`, no restart |
+| `SHARED_BUFFERS_SMALL` | shared_buffers < 15 % of the PostgreSQL limit and cache hit ratio < 95 % | shared_buffers 25 %, effective_cache_size 75 % of the limit (restart: human review only) |
+| `POOL_EXCEEDS_CONNECTIONS` | sum of the pools of the pods of the latest reading (each pod's own pool; a pod not read, starting or crashing, counted with the largest) > max_connections - reserved - other clients' peak - 3 | pool per replica = what is left / replicas |
+
+```bash
+make size WINDOW=30m          # from the cluster's collector (port-forward) -> target/size
+make size-local WINDOW=30m    # from the local collector (PostgreSQL and JVM only)
+```
+
+`target/size/findings.json` holds the findings, `infra.json` the measurements they rest on, `scorecard.md` the
+infrastructure trap scorecard ([TRAPS.md](demo-app/TRAPS.md#infrastructure-traps-phase-6)).
+
 Measuring a fix (here trap 4, the missing index on `review.reviewer_name`):
 
 ```bash
@@ -875,7 +903,7 @@ configuration) — `make collector-local` re-applies the `fq_reader` grants itse
 | `FQ_COLLECTOR_RETENTION_HOURS` | `72` | snapshots older than this are purged |
 | `FQ_COLLECTOR_HTTP_PORT` | `9465` | HTTP API and `/metrics` |
 | `FQ_COLLECTOR_PLANS` | `true` | read auto_explain plans from the JSON server log |
-| `FQ_COLLECTOR_LOG_MAX_MB` | `64` | maximum log read per cycle (the rest is read next cycle) |
+| `FQ_COLLECTOR_LOG_MAX_MB` | `16` | maximum log read per cycle, in 4 MB chunks (the rest is read next cycles; the backlog is `fq_collector_log_lag_bytes`); the plans of a cycle stay in memory until it is stored, so keep it well below the collector's heap |
 | `FQ_COLLECTOR_COLUMN_STATS_MINUTES` | `10` | minutes between `pg_stats` reads (`0`: disabled) |
 | `FQ_COLLECTOR_AGENT_URL` | *(none)* | agent of the observed service (`http://demo-app:9464`): HTTP request counts per endpoint, so comparisons are also given per request; outside Kubernetes, also its JVM signals |
 | `FQ_COLLECTOR_K8S` | `auto` | read the Kubernetes API (`auto`: when running in a pod with a service account; `true`, `false`) |

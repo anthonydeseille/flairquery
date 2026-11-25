@@ -185,6 +185,7 @@ class InfraSourcesTest {
         p.put("container", "demo-app");
         p.put("containerId", id);
         p.put("restarts", id.equals("c2") ? 1 : 0);
+        p.put("ready", !(pod.equals("b") && sec == 0));   // b: its first interval is a startup
         p.put("requests", Map.of("cpuMillis", 25, "memoryBytes", 64L << 20));
         p.put("limits", Map.of("cpuMillis", 500, "memoryBytes", 768L << 20));
         p.put("startupSeconds", 47.0);
@@ -204,7 +205,8 @@ class InfraSourcesTest {
                 container(60, "a", "c2", 1, 10, 0, 200e6),          // restarted: interval skipped
                 container(90, "a", "c2", 4, 310, 30, 300e6),        // 0.1 core, 30/300 throttled
                 container(0, "b", "x1", 0, 0, 0, 100e6),
-                container(30, "b", "x1", 3, 300, 0, 110e6)));       // 0.1 core
+                container(30, "b", "x1", 3, 300, 0, 110e6),         // startup interval (not ready at 0)
+                container(60, "b", "x1", 6, 600, 0, 110e6)));       // 0.1 core
         s.add(container(5, "old", "o1", 0, 0, 0, 90e6));              // replaced during the window
         Map<String, Object> c = InfraSummary.containers(s, Instant.parse("2026-11-24T09:45:00Z")).get(0);
 
@@ -216,6 +218,8 @@ class InfraSourcesTest {
                 .containsEntry("usageP50Millis", 100L).containsEntry("throttledPeriods", 180L)
                 .containsEntry("cfsPeriods", 900L).containsEntry("throttledRatio", 0.2);
         assertThat((Map<String, Object>) c.get("memory")).containsEntry("workingSetMaxBytes", 600_000_000L);
+        assertThat((Map<String, Object>) c.get("startup")).containsEntry("cfsPeriods", 300L).containsEntry("throttledRatio", 0.0)
+                .containsEntry("throttledPeriods", 0L).containsEntry("usageMaxMillis", 100L);
     }
 
     static StoredSample jvm(int sec, long uptime, long gcMs, long heapUsed, long afterGc) {

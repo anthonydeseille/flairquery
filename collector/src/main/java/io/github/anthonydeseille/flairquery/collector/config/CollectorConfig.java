@@ -47,7 +47,7 @@ public record CollectorConfig(
                 Duration.ofHours(positive(env, "FQ_COLLECTOR_RETENTION_HOURS", 72)),
                 (int) positive(env, "FQ_COLLECTOR_HTTP_PORT", 9465),
                 !"false".equalsIgnoreCase(env.getOrDefault("FQ_COLLECTOR_PLANS", "true")),
-                positive(env, "FQ_COLLECTOR_LOG_MAX_MB", 64) * 1024 * 1024,
+                positive(env, "FQ_COLLECTOR_LOG_MAX_MB", 16) * 1024 * 1024,
                 Duration.ofMinutes(positive(env, "FQ_COLLECTOR_COLUMN_STATS_MINUTES", 10)),
                 blankToNull(env.get("FQ_COLLECTOR_AGENT_URL")),
                 "debug".equalsIgnoreCase(env.getOrDefault("FQ_COLLECTOR_LOG_LEVEL", "info")),

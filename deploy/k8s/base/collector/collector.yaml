@@ -110,8 +110,10 @@ spec:
           readinessProbe:
             httpGet: {path: /fq/collector/health, port: http}
             periodSeconds: 5
+          # memory request sized by FlairQuery's own `size` (phase 6): 128Mi was below the measured working set
+          # (180 MiB peak under load, the witness was flagged REQUESTS_BELOW_USAGE)
           resources:
-            requests: {cpu: 50m, memory: 128Mi}
+            requests: {cpu: 50m, memory: 224Mi}
             limits: {cpu: 500m, memory: 256Mi}
           securityContext:
             allowPrivilegeEscalation: false

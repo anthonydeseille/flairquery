@@ -70,6 +70,16 @@ analyze-local: ## Evidence bundle per finding (phase 4) from the local agent + c
 	java -jar analyzer/target/flairquery-analyzer.jar bundle --agent http://localhost:9464 \
 	  --collector http://localhost:$(or $(COLLECTOR_PORT),9465) --source demo-app --out target/analysis --window $(or $(WINDOW),1h)
 
+.PHONY: size size-local
+size: ## Infrastructure sizing findings (phase 6) from the cluster's collector (WINDOW=30m) -> target/size
+	@$(KUBECTL) -n $(NS) port-forward svc/fq-collector 19465:9465 >/dev/null 2>&1 & pf=$$!; sleep 3; \
+	  java -jar analyzer/target/flairquery-analyzer.jar size --collector http://localhost:19465 --out target/size \
+	    --window $(or $(WINDOW),30m); rc=$$?; kill $$pf; exit $$rc
+
+size-local: ## Sizing findings from the local collector (PostgreSQL and JVM only, no Kubernetes) -> target/size
+	java -jar analyzer/target/flairquery-analyzer.jar size --collector http://localhost:$(or $(COLLECTOR_PORT),9465) \
+	  --out target/size --window $(or $(WINDOW),30m)
+
 .PHONY: prove-local
 prove-local: ## Prove patches for one finding (FINDING=<id> PATCH=a.patch[,b.patch] [ROUNDS=5]); needs Docker -> target/proofs
 	@test -n "$(FINDING)" -a -n "$(PATCH)" || { echo "usage: make prove-local FINDING=<id from target/analysis/index.json> PATCH=fix.patch"; exit 2; }

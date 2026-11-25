@@ -24,20 +24,30 @@ import java.util.Properties;
 /**
  * Reads the JSON server log (log_destination = jsonlog) through SQL, with the read-only role:
  * {@code pg_ls_logdir()} to list files, {@code pg_read_binary_file(file, offset, length)} to read what was
- * appended. Only complete lines are consumed; a bounded number of bytes is read per cycle.
+ * appended. Only complete lines are consumed; a bounded number of bytes is read per cycle, in chunks of
+ * {@link #CHUNK_BYTES}.
  */
 public final class SqlLogPlanSource implements PlanSource {
 
     static final int HEAD_BYTES = 48;
+    /** Bytes read from the log per query: bounds the memory of a read, whatever the backlog. */
+    static final int CHUNK_BYTES = 4 * 1024 * 1024;
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final DateTimeFormatter PG_TS = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
 
     private final Target target;
     private final long maxBytesPerCycle;
+    private final int chunkBytes;
 
     public SqlLogPlanSource(Target target, long maxBytesPerCycle) {
+        this(target, maxBytesPerCycle, CHUNK_BYTES);
+    }
+
+    /** {@code chunkBytes}: bytes per read (tests use tiny chunks to cross lines and files). */
+    public SqlLogPlanSource(Target target, long maxBytesPerCycle, int chunkBytes) {
         this.target = target;
         this.maxBytesPerCycle = maxBytesPerCycle;
+        this.chunkBytes = chunkBytes;
     }
 
     @Override
@@ -66,24 +76,34 @@ public final class SqlLogPlanSource implements PlanSource {
                 } else {
                     offset = cursor.offset();
                 }
-                long available = size - offset;
-                if (available > 0 && budget > 0) {
-                    byte[] chunk = readBytes(c, name, offset, Math.min(available, budget));
+                // read in chunks: memory stays bounded by the chunk, never by the backlog (a restart after a burst
+                // of traffic finds tens of MB of log to read; reading it at once got the collector OOMKilled)
+                int chunkSize = chunkBytes;
+                while (size - offset > 0 && budget > 0) {
+                    long length = Math.min(Math.min(size - offset, budget), chunkSize);
+                    byte[] chunk = readBytes(c, name, offset, length);
                     int end = lastNewline(chunk);
-                    if (end >= 0) {
-                        String text = new String(chunk, 0, end + 1, StandardCharsets.UTF_8);
-                        for (String line : text.split("\n")) {
-                            if (line.isEmpty()) continue;
-                            try {
-                                LogEntry e = parse(line);
-                                if (e != null) entries.add(e);
-                            } catch (Exception ex) {
-                                unparsable++;
-                            }
+                    if (end < 0) {
+                        // a line longer than the chunk: read more at once, within the budget
+                        if (length < Math.min(size - offset, budget)) {
+                            chunkSize = (int) Math.min((long) chunkSize * 2, Integer.MAX_VALUE / 2);
+                            continue;
                         }
-                        offset += end + 1;
-                        budget -= end + 1;
+                        break;   // incomplete last line: read on a later cycle
                     }
+                    String text = new String(chunk, 0, end + 1, StandardCharsets.UTF_8);
+                    for (String line : text.split("\n")) {
+                        if (line.isEmpty()) continue;
+                        try {
+                            LogEntry e = parse(line);
+                            if (e != null) entries.add(e);
+                        } catch (Exception ex) {
+                            unparsable++;
+                        }
+                    }
+                    offset += end + 1;
+                    budget -= end + 1;
+                    chunkSize = chunkBytes;
                 }
                 lag += size - offset;
                 next.put(name, new LogCursor(name, offset, head));

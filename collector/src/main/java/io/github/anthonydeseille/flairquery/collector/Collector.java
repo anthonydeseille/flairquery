@@ -88,6 +88,9 @@ public final class Collector {
         } catch (Exception e) {
             errors.incrementAndGet();
             Log.warn("collection cycle failed", e, "target", target());
+            // the infrastructure signals do not need the observed database: they matter most when it refuses
+            // connections (pools x replicas above max_connections)
+            collectInfra(clock.instant());
         }
     }
 
