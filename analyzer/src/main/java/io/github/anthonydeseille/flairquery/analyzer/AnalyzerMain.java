@@ -11,6 +11,7 @@ import io.github.anthonydeseille.flairquery.analyzer.forge.PublishCommand;
 import io.github.anthonydeseille.flairquery.analyzer.input.JsonSource;
 import io.github.anthonydeseille.flairquery.analyzer.mr.MrCommand;
 import io.github.anthonydeseille.flairquery.analyzer.prove.ProveCommand;
+import io.github.anthonydeseille.flairquery.analyzer.size.InfraProveCommand;
 import io.github.anthonydeseille.flairquery.analyzer.size.SizeCommand;
 
 import java.nio.file.Files;
@@ -29,6 +30,7 @@ import java.util.Map;
  *   mr      --fixes DIR [--bundles DIR] [options, see {@link MrCommand}]
  *   publish --mr DIR --github OWNER/REPO [options, see {@link PublishCommand}]
  *   size    --collector URL --out DIR [--window 15m] (phase 6, see {@link SizeCommand})
+ *   prove-infra --overlay DIR --out DIR [options, see {@link InfraProveCommand}]
  * </pre>
  * {@code bundle} writes one evidence bundle per finding ({@code <id>.json}) and an {@code index.json};
  * {@code prove} proves patches for one finding (accepted / rejected, one report per patch);
@@ -59,6 +61,9 @@ public final class AnalyzerMain {
         if (args.length > 0 && args[0].equals("size")) {
             return SizeCommand.run(options(args));
         }
+        if (args.length > 0 && args[0].equals("prove-infra")) {
+            return InfraProveCommand.run(options(args));
+        }
         if (args.length > 0 && args[0].equals("publish")) {
             return PublishCommand.run(options(args));
         }
@@ -69,6 +74,7 @@ public final class AnalyzerMain {
             System.err.println("       " + MrCommand.USAGE.substring("usage: ".length()));
             System.err.println("       " + PublishCommand.USAGE.substring("usage: ".length()));
             System.err.println("       " + SizeCommand.USAGE.substring("usage: ".length()));
+            System.err.println("       " + InfraProveCommand.USAGE.substring("usage: ".length()));
             return 2;
         }
         Map<String, String> opt = options(args);

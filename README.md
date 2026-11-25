@@ -850,6 +850,50 @@ make size-local WINDOW=30m    # from the local collector (PostgreSQL and JVM onl
 `target/size/findings.json` holds the findings, `infra.json` the measurements they rest on, `scorecard.md` the
 infrastructure trap scorecard ([TRAPS.md](demo-app/TRAPS.md#infrastructure-traps-phase-6)).
 
+**Proving a recommendation (`prove-infra`, phase 6).** Every recommendation is replayed on kind before it can become
+a merge request. The overlay being sized is rendered and moved into the throwaway namespace `fq-prove` (its PVCs
+too, so the data survives the cold restarts; the cluster role and its binding get a per-namespace name, so another
+namespace's are never taken over),
+the corpus is loaded once, then each phase stops the application workloads (every Deployment but the collector and
+its store), starts them cold (the database first, Ready before the applications, so that their startup never
+includes waiting for it) and plays the same load, timed per request (one warm-up round, then `PROVE_ROUNDS`, 60 by
+default: the CPU rules need 4 steady samples and the kubelet refreshes its counters every 10-15 s):
+
+1. **baseline**: the overlay as is; its measurements are sized again, and these findings are the ones proven;
+2. **one phase per finding**, in a fixed order (CPU throttling first: a starved CPU distorts every other measurement;
+   then pools, heap, `work_mem`, `shared_buffers`; the requests last, as they follow the usage after the other
+   changes): the overlay, plus every patch accepted so far, plus the finding's Kustomize strategic-merge patch
+   (`-XX:MaxRAMPercentage` in the variable that sets it, `resources`, PostgreSQL `-c name=value` arguments, the
+   pool-size variable). The patch is computed on, and judged against, the latest accepted measurement: an accepted
+   patch makes its phase the new reference, so the patches are proven together, as they would be merged (a smaller
+   heap only holds with enough CPU for the GC). A finding no longer reported on the reference is inconclusive.
+3. **control**: the baseline again, last; its drift from the first baseline (startups, steady throttling, p95 per
+   path) is reported as the replay's own noise: a verdict whose margins are within it is fragile.
+
+A patch is accepted only when its finding is gone, every restarted workload rolled out (all replicas Ready, no
+restart, no OOMKill), no request failed (a refused connection fails one), no request path's p95 got worse by more
+than 25 % + 50 ms, no startup got slower by more than 20 % + 5 s, no new sizing finding appeared on a restarted workload
+(a CPU rule silent on the reference for lack of samples is not counted as new; the collector and its store run
+differently in a replay, every 10 s, and are not compared), and, rule by rule,
+the container is throttled less (`CPU_THROTTLED`: the steady ratio down by more than 5 points or a clearly faster
+startup, and the steady ratio not up by more than 5; a JVM startup takes whatever CPU it is given, so its throttling
+ratio stays near 100 % whatever the limit and is reported, not judged; when it stays throttled, the next recommendation, computed on the improved measurement, is then tried on top, up to
+3 steps, while each step is accepted) or the spilling statement writes no temporary block at all
+(`WORK_MEM_SPILLS`: a work_mem the memory budget caps below the need is rejected, the code fix is the remedy). A
+finding that does not show up in the baseline is inconclusive; one on the collector or its store is skipped.
+
+```bash
+make prove-infra OVERLAY=dev                 # ~35 min -> target/infra-proofs/dev
+make prove-infra OVERLAY=pool-overflow FINDING=pool-exceeds-connections-postgres-deployment-postgres
+```
+
+`target/infra-proofs/<overlay>/` holds the patches (`patches/`), the overlays replayed (`overlays/`, and
+`overlays/accepted`: every accepted patch), every phase's measurements, `report.json` (each check with its figures)
+and `proofs.md`. A patch the API server refuses (a request above its limit) is rejected. The namespace is deleted at the end, even
+on failure or interruption (`KEEP=1` keeps it). On macOS the target runs under `caffeinate -i`: a host that goes to
+idle sleep freezes the cluster VM, and the startups measured then took 6 to 12 minutes. A baseline whose requests fail although every workload rolled out
+stops the replay: the environment is broken, nothing could be proven.
+
 Measuring a fix (here trap 4, the missing index on `review.reviewer_name`):
 
 ```bash

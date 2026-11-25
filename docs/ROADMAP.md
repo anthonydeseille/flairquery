@@ -84,7 +84,13 @@ every replica, and `pg_settings` / `pg_stat_database` / `pg_stat_activity`, summ
 `/fq/collector/infra`. Step 2 (the deterministic `size` command: six rules, findings with their evidence and a
 recommended configuration computed from the measurements, infrastructure trap scorecard) done: on kind, profile S,
 I1-I4 and I6 detected (I6 with the `pool-overflow` overlay), I5 not triggered on profile S (the data fit), witness
-clean. Next: step 3, the infra prover on kind, then the Kustomize merge requests, the scorecard and release 0.6.0.
+clean. Step 3 (`prove-infra`, the infrastructure prover) done: each recommendation becomes a Kustomize patch,
+replayed in the throwaway namespace `fq-prove` (workloads restarted cold, database first, same timed load), the
+patches proven stacked (CPU first, requests last) against the latest accepted measurement, a control phase
+measuring the replay's own noise; on kind, profile S: I1-I4 accepted (I3 in two steps, 500m -> 1 -> 2), I5
+inconclusive (resolved by I4), I6 rejected on `pool-overflow` on a p95 within the replay's own noise (open: judge
+a regression against the control's drift, and replay a rollout for I6). Next: step 4, the Kustomize merge requests through
+`mr`/`publish`, then the scorecard and release 0.6.0.
 - API pods: requests/limits from the real p95, CPU throttling, JVM heap/GC,
   `MaxRAMPercentage` consistent with the memory limit; VPA in recommendation mode as a source
 - Database: `work_mem` (from `temp_blks_written`), `shared_buffers`, `effective_cache_size`

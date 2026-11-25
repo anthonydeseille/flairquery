@@ -5,3 +5,12 @@ namespace: fq-dev
 resources:
   - namespace.yaml
   - ../../base
+patches:
+  # cluster-scoped: one binding per namespace, else deploying another namespace would take this one over
+  - target:
+      kind: ClusterRoleBinding
+      name: fq-collector-cadvisor
+    patch: |-
+      - op: replace
+        path: /metadata/name
+        value: fq-collector-cadvisor-fq-dev

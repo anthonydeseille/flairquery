@@ -76,6 +76,14 @@ size: ## Infrastructure sizing findings (phase 6) from the cluster's collector (
 	  java -jar analyzer/target/flairquery-analyzer.jar size --collector http://localhost:19465 --out target/size \
 	    --window $(or $(WINDOW),30m); rc=$$?; kill $$pf; exit $$rc
 
+.PHONY: prove-infra
+prove-infra: ## Replay each sizing recommendation of OVERLAY on kind in the throwaway namespace fq-prove (PROFILE=S PROVE_ROUNDS=60 [FINDING=id,id] [KEEP=1]) -> target/infra-proofs/OVERLAY
+	@# macOS: no idle sleep during the replay (a sleeping host freezes the cluster VM: startups of 6-12 min measured)
+	$(if $(shell command -v caffeinate),caffeinate -i,) java -jar analyzer/target/flairquery-analyzer.jar prove-infra --overlay deploy/k8s/overlays/$(OVERLAY) \
+	  --out target/infra-proofs/$(OVERLAY) --kubectl $(KUBECTL_BIN) --context $(KUBE_CONTEXT) \
+	  --profile $(or $(PROFILE),S) --rounds $(or $(PROVE_ROUNDS),60) $(if $(FINDING),--finding $(FINDING),) \
+	  $(if $(KEEP),--keep true,)
+
 size-local: ## Sizing findings from the local collector (PostgreSQL and JVM only, no Kubernetes) -> target/size
 	java -jar analyzer/target/flairquery-analyzer.jar size --collector http://localhost:$(or $(COLLECTOR_PORT),9465) \
 	  --out target/size --window $(or $(WINDOW),30m)
@@ -250,6 +258,7 @@ status: ## Pods and resources of the namespace
 
 undeploy: ## Delete the namespace NS (and its data)
 	$(KUBECTL) delete namespace $(NS) --ignore-not-found --wait=true
+	$(KUBECTL) delete clusterrolebinding fq-collector-cadvisor-$(NS) --ignore-not-found
 
 clean: ## Delete the cluster and the FlairQuery images (frees disk space)
 ifeq ($(CLUSTER_TOOL),k3d)

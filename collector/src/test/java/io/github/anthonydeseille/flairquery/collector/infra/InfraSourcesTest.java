@@ -139,6 +139,35 @@ class InfraSourcesTest {
     }
 
     @Test
+    void cadvisorKeepsTheKubeletReadTimeOfTheCpuCounter() {
+        var m = Cadvisor.parse(CADVISOR, Set.of("fq-dev/demo-app-5d4f8b7c9-x2k4p"));
+        assertThat(m.get(new Cadvisor.Key("fq-dev", "demo-app-5d4f8b7c9-x2k4p", "demo-app")))
+                .containsEntry(Cadvisor.CPU_TIMESTAMP, 1732442400000.0);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void cpuRatesUseTheKubeletStampsNotTheCollectorClock() {
+        // collector every 10 s, kubelet refreshing every 15 s: the same reading twice, then 15 s of work in 10 s
+        List<StoredSample> s = new ArrayList<>();
+        double[][] readings = {{0, 0}, {10, 0}, {20, 15_000}, {30, 30_000}, {40, 30_000}, {50, 45_000}};
+        double cpu = 0;
+        double lastStamp = 0;
+        for (double[] r : readings) {
+            if (r[1] != lastStamp) cpu += 0.5 * (r[1] - lastStamp) / 1000;   // a steady 500m
+            lastStamp = r[1];
+            StoredSample x = container((int) r[0], "a", "c1", cpu, 100 * r[0], 0, 1e8);
+            ((Map<String, Object>) x.payload().get("usage")).put(Cadvisor.CPU_TIMESTAMP, 1_795_600_000_000.0 + r[1]);
+            s.add(x);
+        }
+        Map<String, Object> c = InfraSummary.containers(s, Instant.parse("2026-11-24T09:45:00Z")).get(0);
+        Map<String, Object> rates = (Map<String, Object>) c.get("cpu");
+        // the collector's clock would give 0m, 750m, 750m, 0m, 750m; the kubelet's stamps 500m three times
+        assertThat(rates).containsEntry("rateSamples", 3).containsEntry("usageMaxMillis", 500L)
+                .containsEntry("usageP95Millis", 500L);
+    }
+
+    @Test
     void quantities() {
         assertThat(Quantity.millicores("25m")).isEqualTo(25);
         assertThat(Quantity.millicores("0.5")).isEqualTo(500);

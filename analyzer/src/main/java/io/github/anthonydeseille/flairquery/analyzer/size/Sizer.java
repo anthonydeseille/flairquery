@@ -224,7 +224,15 @@ public final class Sizer {
         cur.put("cpuRequest", cpuReq == null ? null : Units.cpu(cpuReq));
         cur.put("memoryRequest", memReq == null ? null : Units.memory(memReq));
         List<String> notes = new ArrayList<>();
-        if (cpuLow) rec.put("cpuRequest", Units.cpu(Units.roundUp(p95, 25)));
+        if (cpuLow) {
+            long cpuRec = Units.roundUp(p95, 25);
+            Long cpuLimit = c.path("limits").hasNonNull("cpuMillis") ? c.path("limits").get("cpuMillis").asLong() : null;
+            if (cpuLimit != null && cpuRec > cpuLimit) {
+                cpuRec = cpuLimit;   // Kubernetes refuses a request above the limit
+                notes.add("CPU request capped at the CPU limit");
+            }
+            rec.put("cpuRequest", Units.cpu(cpuRec));
+        }
         if (memLow) {
             long memRec = Units.roundUp(Math.round(wsMax * MEMORY_REQUEST_MARGIN), 32 * MI);
             Long memLimit = c.path("limits").hasNonNull("memoryBytes") ? c.path("limits").get("memoryBytes").asLong() : null;

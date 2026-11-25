@@ -70,6 +70,33 @@ Found while measuring, and fixed: the collector got OOMKilled reading a 45 MB lo
 4 MB chunks, 16 MB per cycle by default), and during I6 it could not connect either (`too many clients`): its
 infrastructure readings are now stored even when the observed database refuses the cycle.
 
+### Phase 6 scorecard: proven by the replay (`prove-infra`, kind, profile S)
+
+`make prove-infra OVERLAY=dev` and `OVERLAY=pool-overflow`: each recommendation replayed in the throwaway namespace
+`fq-prove`, workloads restarted cold, 60 timed load rounds per phase, patches proven stacked (CPU first):
+
+| # | Patch (Kustomize, `overlays/accepted`) | Verdict | Measured, before -> after |
+|---|---|---|---|
+| I3 | CPU limit `500m` -> `1` | ✅ ACCEPTED (step 1) | steady throttling 44.6 % -> 18.2 %, startup 84 s -> 54 s; still throttled: next step |
+| I3 | CPU limit `1` -> `2` | ✅ ACCEPTED (step 2) | steady throttling 18.2 % -> 2.9 %, startup 54 s -> 14 s, p95 down on every path (e.g. `/authors` 318 -> 167 ms) |
+| I1 | `-XX:MaxRAMPercentage=60` (heap 461 MiB in 768 MiB) | ✅ ACCEPTED | finding gone, no OOMKill, latency and startup unchanged (rejected when proven before I3: a smaller heap on a starved CPU slowed `/authors` from 0.67 s to 1.09 s) |
+| I4 | `work_mem=32MB` | ✅ ACCEPTED | trap 7's sort: 0 temporary blocks (1.7 GB written per phase before), `/reviews/ranking` p95 144 -> 71 ms |
+| I5 | — | ⏸ INCONCLUSIVE | no longer reported once I4 removed the spills (cache hit ratio back above 95 % on profile S) |
+| I2 | demo-app requests `25m/64Mi` -> `925m/480Mi`; PostgreSQL CPU request `100m` -> `550m` | ✅ ACCEPTED | findings gone, sized on the usage after the other patches |
+| I6 | `HIKARI_MAX_POOL` `20` -> `14` (3 replicas x 14 = 42 <= 43) | ❌ REJECTED, within the noise | finding gone, 3/3 Ready, 0 failed request, startup 73 -> 64 s; rejected on the p95 of `/authors/with-books` (0.75 -> 1.17 s) and `/reviews/ranking` (0.18 -> 0.29 s), while the control (the baseline played twice) differs by 103 % on `/reviews/ranking`: three JVMs throttled at 500m on a laptop node are too noisy to conclude. On a fresh start the pools fill without a refused connection (the trap bites at a rollout, when old and new pods overlap), so the baseline shows no failure either |
+| ✓ | — | SKIPPED | the collector is the replay's observer: never restarted, never patched |
+
+Control (the baseline played twice): demo-app startup 84 s then 65 s, p95 up to 21 % apart (`/authors`) on the
+dev overlay, 47 % on the spilling `/reviews/ranking` on pool-overflow: the replay's noise is of the order of the
+tolerances (25 % + 50 ms on a p95, 20 % + 5 s on a startup). The gains of I3 and I4 are far beyond it; I1 and I2
+are accepted on the absence of a regression, judged within that noise.
+
+Found while replaying, and fixed: the collector computed CPU rates on its own clock while the kubelet serves cached
+cAdvisor values (refreshed every 10-15 s): a 10 s interval read 0 or twice the usage (p95 697m under a 500m limit);
+rates now use the kubelet's own timestamps. A CPU request recommended above the limit (refused by Kubernetes) is
+now capped at the limit. The cadvisor ClusterRoleBinding of each namespace now has its own name (deploying
+`fq-e2e` took `fq-dev`'s over).
+
 ## Reference measurements (profile S, local, agent enabled)
 
 | Endpoint | SQL statements / call | Note |

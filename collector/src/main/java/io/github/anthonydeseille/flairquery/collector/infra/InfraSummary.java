@@ -98,7 +98,12 @@ public final class InfraSummary {
                 StoredSample prev = ss.get(i - 1);
                 if (!sameContainer(prev, ss.get(i))) continue;   // restarted: counters started again
                 Map<String, Object> pu = usage(prev);
-                double seconds = Duration.between(prev.takenAt(), ss.get(i).takenAt()).toMillis() / 1000.0;
+                Double t0 = dbl(pu.get(Cadvisor.CPU_TIMESTAMP));
+                Double t1 = dbl(u.get(Cadvisor.CPU_TIMESTAMP));
+                // the kubelet's own read times when known (it serves cached values): the same stamp twice is the
+                // same reading, not an idle interval
+                double seconds = t0 != null && t1 != null ? (t1 - t0) / 1000.0
+                        : Duration.between(prev.takenAt(), ss.get(i).takenAt()).toMillis() / 1000.0;
                 boolean inStartup = startupInterval(prev, ss.get(i).payload());
                 Double dCpu = delta(pu, u, "cpuUsageSeconds");
                 if (dCpu != null && seconds > 0) {

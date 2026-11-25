@@ -46,6 +46,7 @@ cleanup() {
   else
     log "deleting namespace $NS"
     $KUBECTL delete namespace $NS --ignore-not-found --wait=true --timeout=5m >/dev/null 2>&1 || true
+    $KUBECTL delete clusterrolebinding fq-collector-cadvisor-$NS --ignore-not-found >/dev/null 2>&1 || true
   fi
   exit $code
 }

@@ -21,6 +21,9 @@ public final class Cadvisor {
             "container_memory_rss", "memoryRssBytes",
             "container_oom_events_total", "oomEvents");
 
+    /** Epoch milliseconds at which the kubelet read the CPU counter (the sample's own timestamp). */
+    public static final String CPU_TIMESTAMP = "cpuUsageTimestampMs";
+
     private Cadvisor() { }
 
     public record Key(String namespace, String pod, String container) { }
@@ -53,7 +56,17 @@ public final class Cadvisor {
                 continue;
             }
             // several cgroup entries can exist for one container (e.g. a restarted one): keep the largest counter
-            out.computeIfAbsent(new Key(ns, pod, container), k -> new LinkedHashMap<>()).merge(short_, value, Math::max);
+            Map<String, Double> c = out.computeIfAbsent(new Key(ns, pod, container), k -> new LinkedHashMap<>());
+            c.merge(short_, value, Math::max);
+            if (short_.equals("cpuUsageSeconds") && rest.length > 1) {
+                // the kubelet serves cached values (refreshed every 10-15 s) stamped with the time they were read:
+                // CPU rates are computed on these stamps, never on the collector's clock
+                try {
+                    c.merge(CPU_TIMESTAMP, Double.parseDouble(rest[1]), Math::max);
+                } catch (NumberFormatException ignored) {
+                    // no timestamp: the collector's clock is used
+                }
+            }
         }
         return out;
     }

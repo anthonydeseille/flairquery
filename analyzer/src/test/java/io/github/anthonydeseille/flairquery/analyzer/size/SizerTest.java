@@ -232,6 +232,16 @@ class SizerTest {
     }
 
     @Test
+    void cpuRequestNeverAboveTheLimit() {
+        // a p95 read above the limit (a cAdvisor rate over a too short interval): Kubernetes refuses request > limit
+        ObjectNode c = container("Deployment/demo-app", "demo-app", 1, 25, 64 * MI, 500L, 768 * MI,
+                40, 700, 760, 10, 1200, 0.0, 0.0, 0, 390 * MI);
+        SizingFinding f = new Sizer("30m", null).requests("Deployment/demo-app/demo-app", c).orElseThrow();
+        assertThat(f.recommended()).containsEntry("cpuRequest", "500m");
+        assertThat(f.notes()).contains("CPU request capped at the CPU limit");
+    }
+
+    @Test
     void units() {
         assertThat(Units.cpu(1000)).isEqualTo("1");
         assertThat(Units.cpu(475)).isEqualTo("475m");
